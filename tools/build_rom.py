@@ -21,6 +21,11 @@ ROM_SIZE = 0x2000000
 HOOK_ROM = 0x1000 + 0x342A8
 HOOK_ORIG = bytes.fromhex("27bdfff0" "00804821")   # addiu sp,sp,-0x10 ; move t1,a0
 HOOK_NEW = bytes.fromhex("08104000" "00000000")    # j 0x80410000 ; nop
+# Single Play entry of the main-menu table (overlay stored uncompressed;
+# RAM 0x8014F4E0): (0x8014D47C, 2 items) -> (0x80409000, 3 items)
+SP_TABLE_ROM = 0xF5C80
+SP_TABLE_ORIG = bytes.fromhex("8014d47c" "02000000")
+SP_TABLE_NEW = bytes.fromhex("80409000" "03000000")
 # First 4 words of the original entry: BSS clear of 0x80056710, 0x68780 bytes
 EXPECTED_ENTRY = bytes.fromhex("3c088005 25086710 3c090007 25298780".replace(" ", ""))
 
@@ -75,6 +80,10 @@ def patch(rom_path, stub_path, payload_path, out_path):
     if rom[HOOK_ROM:HOOK_ROM + 8] != HOOK_ORIG:
         sys.exit("osContGetReadData does not match the expected instructions")
     rom[HOOK_ROM:HOOK_ROM + 8] = HOOK_NEW
+
+    if rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] != SP_TABLE_ORIG:
+        sys.exit("Single Play menu table entry does not match")
+    rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] = SP_TABLE_NEW
 
     padded = payload + b"\xFF" * (-len(payload) % 8)
     rom[PAYLOAD_ROM:PAYLOAD_ROM + len(padded)] = padded

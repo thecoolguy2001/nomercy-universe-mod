@@ -138,7 +138,10 @@ static void endtrig_tick(void)
             write_png(path);
         }
         if (frame - end_frame >= 600) {
-            printf("[nmdbg] frame %u endtrig done\n", frame);
+            uint32_t a2;
+            printf("[nmdbg] frame %u mailbox 80408000:", frame);
+            for (a2 = 0x408000; a2 < 0x408020; a2++) printf("%s%02X", (a2 & 3) ? "" : " ", rd8(a2));
+            printf("\n[nmdbg] frame %u endtrig done\n", frame);
             fflush(stdout);
             _Exit(0);
         }

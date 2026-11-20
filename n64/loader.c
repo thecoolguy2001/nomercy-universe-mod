@@ -24,6 +24,27 @@ static void install_resident(void)
     for (i = 0; i < sizeof(Mailbox) / 4; i++) mb[i] = 0;
 }
 
+/* Single Play menu items (22 bytes each). The ROM's menu table entry for
+ * Single Play is patched to (SP_ITEMS_ADDR, 3). Fields: x, y (s16),
+ * 0x04 0x00, up, down, left, right, label image id, help id, ...,
+ * mode opened (byte 19). Items 0 and 1 are the game's own. */
+#define SP_ITEMS_ADDR 0x80409000u
+static const uint8_t SP_ITEMS[3][22] = {
+    /* Championship: up -> Universe, down -> Survival */
+    {0xFF,0xB0,0xFF,0xDD,0x04,0x00, 2,1,0,0, 0x85,0x09, 0xF6,0x97, 0x05,0x00, 0xFF,0xFF,0x04,0x0C,0x08,0x00},
+    /* Survival: up -> Championship, down -> Universe */
+    {0xFF,0xB0,0xFF,0xEE,0x04,0x00, 0,2,1,1, 0x85,0x0A, 0xF6,0x98, 0x06,0x00, 0xFF,0xFF,0x04,0x03,0x08,0x00},
+    /* Universe Mode (TEST: Championship label, opens Survival for now) */
+    {0xFF,0xB0,0xFF,0xFF,0x04,0x00, 1,0,2,2, 0x85,0x09, 0xF6,0x98, 0x06,0x00, 0xFF,0xFF,0x04,0x03,0x08,0x00},
+};
+
+static void install_menu(void)
+{
+    volatile uint8_t *dst = (volatile uint8_t *)(0xA0000000u | (SP_ITEMS_ADDR & 0x1FFFFFFFu));
+    unsigned i;
+    for (i = 0; i < sizeof SP_ITEMS; i++) dst[i] = ((const uint8_t *)SP_ITEMS)[i];
+}
+
 static void remove_hook(void)
 {
     volatile uint32_t *hook = (volatile uint32_t *)(0xA0000000u | (HOOK_ADDR & 0x1FFFFFFFu));
@@ -34,8 +55,10 @@ static void remove_hook(void)
 void n64_main(void)
 {
     if (mem_size() >= 0x800000u && resident_image_size <= RESIDENT_MAX)
+    {
         install_resident();
-    else
+        install_menu();
+    } else
         remove_hook();           /* no Expansion Pak: play the unmodified game */
 
     if (pad_read() & BTN_Z) {

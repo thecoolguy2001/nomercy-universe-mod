@@ -5,7 +5,7 @@
 
 #define RESIDENT_BASE   0x80410000u
 #define RESIDENT_MAX    0x00070000u   /* image must end before 0x80480000 */
-#define MAILBOX_ADDR    0x80408000u   /* status block readable from the debugger */
+#define MAILBOX_ADDR    0x80408000u   /* status/command block (debugger + Universe UI) */
 #define MAILBOX_MAGIC   0x4E4D5552u   /* 'NMUR' */
 
 /* libultra OSContPad */
@@ -17,14 +17,30 @@ typedef struct {
     uint8_t  pad;
 } OSContPad;
 
+/* Match director commands / states */
+enum { CMD_NONE = 0, CMD_WATCH = 1, CMD_PLAY = 2 };
+enum { ST_IDLE = 0, ST_SETUP = 1, ST_IN_MATCH = 2, ST_DONE = 3 };
+
 typedef struct {
-    uint32_t magic;
-    uint32_t calls;        /* osContGetReadData calls since boot */
-    uint32_t first_count;  /* CP0 Count at the first call */
-    uint32_t last_count;   /* CP0 Count at the latest call */
-    uint16_t last_buttons; /* controller 1 as read from the PIF */
+    uint32_t magic;        /* 0x00 */
+    uint32_t calls;        /* 0x04 osContGetReadData calls since boot */
+    uint32_t first_count;  /* 0x08 CP0 Count at the first call */
+    uint32_t last_count;   /* 0x0C CP0 Count at the latest call */
+    uint16_t last_buttons; /* 0x10 controller 1 as read from the PIF */
     uint16_t pad0;
-    uint32_t reserved[10];
+    /* match director: request (written by caller) */
+    uint8_t  cmd;          /* 0x14 CMD_*; cleared when accepted */
+    uint8_t  p1;           /* 0x15 side 1 wrestler (Superstar Select grid index) */
+    uint8_t  p2;           /* 0x16 side 2 wrestler */
+    uint8_t  pad1;
+    /* match director: status / result (written by the module) */
+    uint8_t  state;        /* 0x18 ST_* */
+    uint8_t  winner_side;  /* 0x19 0 or 1 (0xFF until known) */
+    uint8_t  loser_code;   /* 0x1A loser's result byte (1/3/...) */
+    uint8_t  step;         /* 0x1B current macro step */
+    uint16_t clock_min;    /* 0x1C */
+    uint16_t clock_sec;    /* 0x1E */
+    uint32_t reserved[8];
 } Mailbox;
 
 #endif

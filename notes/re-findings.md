@@ -92,3 +92,31 @@ capture what they need in a single run.
   Expansion Pak). Old boot screen only when Z is held at power-on.
 - Verified in debugger: hook called ~every 2-3 VI frames, menus respond
   normally through it (reached Exhibition > PLAYER tab).
+
+## Main menu wheel / Single Play menu — FOUND
+- Main menu wheel pages: Multi Play (7 items), Single Play (Championship,
+  Survival), Commissioner (Smackdown Mall, Options). L/R turns the wheel.
+- Menu overlay is stored UNCOMPRESSED in ROM: RAM 0x8014C000 = ROM 0xF27A0
+  (RAM = ROM + 0x80059860 for this overlay).
+- Menu table (pairs of item-list pointer, count<<24) around 0x8014F4C8.
+  Single Play entry at RAM 0x8014F4E0 / ROM 0xF5C80 = (0x8014D47C, 2).
+  Multi Play (0x8014D3E0, 7), Commissioner (0x8014D4A8, 2).
+- Menu item = 22 bytes: s16 x, s16 y, 04 00, up, down, left, right,
+  u16 label image id (0x85xx: Exhibition 8501 .. Ironman 8507,
+  Championship 8509, Survival 850A, Smackdown Mall 850C, Options 850D),
+  u16 help id (0xF6xx), byte, 00, FFFF, 04, mode opened (Exhibition 02,
+  Championship 0C, Survival 03), 08 00.
+- Single Play cursor: u16 at 0x80159C0C (record at 0x80159C00 holds a
+  pointer to the menu-table entry at +8).
+- Labels are rendered once when the menu is built (changing the id later
+  does nothing). Label ids are not ASCII strings anywhere — likely images.
+
+**Working:** ROM patch points the Single Play entry at (0x80409000, 3);
+the boot loader writes 3 items there (third = Universe Mode, currently
+reusing the Championship label and opening Survival). Drawn and navigable.
+Requires the Expansion Pak.
+
+## Match director — in test
+Resident hook accepts CMD_WATCH via mailbox (0x80408014: cmd, p1, p2),
+drives Exhibition menus from the MATCH tab, picks wrestlers, reaches the
+match (verified: Undertaker picked, match started, state=IN_MATCH).
