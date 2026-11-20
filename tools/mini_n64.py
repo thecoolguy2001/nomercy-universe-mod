@@ -91,6 +91,10 @@ class N64:
             return  # no expansion pak: writes are lost
         if 0x04400000 <= p < 0x04400038:
             self.vi[p] = val
+            v_intr, v_sync = self.vi.get(0x0440000C), self.vi.get(0x04400018)
+            if v_intr is not None and v_sync and v_intr >= v_sync:
+                # Mupen64Plus never refreshes the screen in this state
+                raise Halt(f"VI_V_INTR {v_intr:#x} >= VI_V_SYNC {v_sync:#x}: black screen on Mupen64Plus")
             return
         if 0x04600000 <= p < 0x04600034:
             self.pi[p] = val

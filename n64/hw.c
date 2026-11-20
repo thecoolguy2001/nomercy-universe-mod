@@ -39,7 +39,10 @@ void vi_init(void)
     VI_CONTROL  = 0x0000320E;
     VI_ORIGIN   = FB_PHYS;
     VI_WIDTH    = FB_W;
-    VI_V_INTR   = 0x3FF;
+    /* Must be below V_SYNC: Mupen64Plus (M64Plus FZ) only schedules its
+     * per-frame screen update when V_INTR < V_SYNC. 0x3FF gave a black
+     * screen. CPU interrupts stay disabled, so no handler is needed. */
+    VI_V_INTR   = 0x200;
     VI_V_CURRENT = 0;
     VI_BURST    = 0x03E52239;
     VI_V_SYNC   = 0x0000020D;
@@ -56,6 +59,7 @@ void vi_blank(void)
 {
     VI_H_START = 0;
     VI_CONTROL = 0;
+    VI_V_CURRENT = 0; /* acknowledge any pending VI interrupt */
 }
 
 void fb_rect(int x, int y, int w, int h, uint16_t color)
