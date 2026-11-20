@@ -15,6 +15,10 @@
  *   pokeb ADDR VALUE              write 8-bit value
  *   log ADDR LEN                  print LEN bytes at ADDR to stdout
  *   savestate PATH / loadstate PATH   mupen64plus savestates (taken at next VI)
+ *   endtrig                       when the match clock (0x8015AB18 min, 0x8015AB1C sec)
+ *                                 stays frozen 150 frames: write pre.bin (>=180 frames
+ *                                 before the freeze) and post.bin, shoot end_NN.png
+ *                                 every 30 frames for 600 frames, then quit
  *   quit                          exit the emulator
  *   every N shot PREFIX           (frame ignored) screenshot every N frames
  */
@@ -56,6 +60,14 @@ static uint8_t *pix;          /* last frame, RGB */
 static uint32_t pix_w, pix_h;
 
 static uint32_t hold_buttons, hold_until;
+
+/* end-of-match trigger */
+#define RING 6
+static int endtrig_on, endtrig_fired;
+static uint32_t clk_last, clk_change_frame, end_frame;
+static uint8_t *ring[RING];
+static uint32_t ring_frame[RING];
+static int ring_pos;
 static int8_t stick_x, stick_y;
 static uint32_t stick_until;
 
@@ -93,6 +105,64 @@ static uint32_t ram_off(const char *s)
 /* mupen64plus keeps RDRAM as host-endian 32-bit words */
 static uint8_t rd8(uint32_t a) { return rdram[a ^ 3]; }
 static void wr8(uint32_t a, uint8_t v) { rdram[a ^ 3] = v; }
+
+static void write_png(const char *path);
+
+static uint32_t rd32(uint32_t a) { return (uint32_t)rd8(a) << 24 | rd8(a + 1) << 16 | rd8(a + 2) << 8 | rd8(a + 3); }
+
+static void save_ram(const char *name, const uint8_t *src)
+{
+    char path[512];
+    FILE *f;
+    uint32_t i;
+    snprintf(path, sizeof path, "%s/%s.bin", outdir, name);
+    if (!(f = fopen(path, "wb"))) return;
+    for (i = 0; i < rdram_size; i++) fputc(src[i ^ 3], f);
+    fclose(f);
+}
+
+static void endtrig_tick(void)
+{
+    uint32_t clk = rd32(0x15AB18) * 60 + rd32(0x15AB1C);
+    char path[512];
+    int k;
+    if (frame % 60 == 0) {          /* rolling snapshots */
+        if (!ring[ring_pos]) ring[ring_pos] = malloc(rdram_size);
+        memcpy(ring[ring_pos], rdram, rdram_size);
+        ring_frame[ring_pos] = frame;
+        ring_pos = (ring_pos + 1) % RING;
+    }
+    if (endtrig_fired) {
+        if ((frame - end_frame) % 30 == 0) {
+            snprintf(path, sizeof path, "%s/end_%02u.png", outdir, (frame - end_frame) / 30);
+            write_png(path);
+        }
+        if (frame - end_frame >= 600) {
+            printf("[nmdbg] frame %u endtrig done\n", frame);
+            fflush(stdout);
+            _Exit(0);
+        }
+        return;
+    }
+    if (clk != clk_last) {
+        clk_last = clk;
+        clk_change_frame = frame;
+        return;
+    }
+    if (clk >= 5 && frame - clk_change_frame >= 150) {
+        int best = -1;
+        for (k = 0; k < RING; k++)  /* newest snapshot taken >=180 frames before the freeze */
+            if (ring[k] && ring_frame[k] + 180 <= clk_change_frame &&
+                (best < 0 || ring_frame[k] > ring_frame[best]))
+                best = k;
+        endtrig_fired = 1;
+        end_frame = frame;
+        printf("[nmdbg] frame %u MATCH END: clock %u:%02u froze at frame %u, pre snapshot frame %u\n",
+               frame, clk / 60, clk % 60, clk_change_frame, best >= 0 ? ring_frame[best] : 0);
+        if (best >= 0) save_ram("pre", ring[best]);
+        save_ram("post", rdram);
+    }
+}
 
 static void write_png(const char *path)
 {
@@ -176,6 +246,9 @@ static void run_cmd(const Cmd *c)
         } else {
             printf("[nmdbg] no core handle for %s\n", c->cmd);
         }
+    } else if (!strcmp(c->cmd, "endtrig")) {
+        endtrig_on = 1;
+        clk_change_frame = frame;
     } else if (!strcmp(c->cmd, "quit")) {
         printf("[nmdbg] frame %u quit\n", frame);
         fflush(stdout);
@@ -209,6 +282,7 @@ static void load_script(void)
 
 void vdac_init(struct n64video_config *config)
 {
+    setvbuf(stdout, NULL, _IOLBF, 0);
     rdram = config->gfx.rdram;
     rdram_size = config->gfx.rdram_size;
     load_script();
@@ -249,6 +323,7 @@ void vdac_sync(bool valid)
     }
     while (next_cmd < ncmds && cmds[next_cmd].frame <= frame)
         run_cmd(&cmds[next_cmd++]);
+    if (endtrig_on) endtrig_tick();
 }
 
 void vdac_close(void) {}

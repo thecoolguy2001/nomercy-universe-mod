@@ -44,7 +44,7 @@ Superstars page 1 grid: 0 The Rock, 1 ?, 2 Steve Austin, 3 Undertaker,
 ("Type N" under the name changes with the pick — probably attire.)
 
 ## Not found yet
-- Match result (winner, method) after the bell.
+- Finish METHOD (meaning of loser codes 1 vs 3), DQ/count-out/submission codes.
 - Where match type / arena / player mode are committed for the match.
 - Wrestler ids beyond page 1, unlock flags, menu code for Single Play.
 
@@ -62,3 +62,21 @@ finish by 7:27). Exhibition Watch matches loop replays after the bell.
 Winner byte not identified yet. Next: shorter controlled matches (e.g.
 low time limit via RULES, or P1 forced loss) with screenshots every 30
 frames around the bell.
+
+## Match clock and result — FOUND
+| Address | Meaning |
+|---|---|
+| 0x8015AB18 (u32) | match clock minutes |
+| 0x8015AB1C (u32) | match clock seconds; clock freezes at the bell |
+| 0x8015AF45 | side 1 (P1 slot) result: 0 during match, **4 = won**, 1 or 3 = lost |
+| 0x8015B29D | side 2 result, same codes (slot stride 0x358; more slots likely for tag/triple) |
+
+Verified on 9 finished matches (5 with pre/post-bell snapshots from the
+`endtrig` debugger command, 4 from periodic dumps) and 1 unfinished match
+(stays 0/0). Loser code 1 vs 3 not explained yet (both seen on pinfalls
+per the on-screen banner; idle-P1 match gave 4/3).
+
+Debugger: `endtrig` script command saves pre.bin/post.bin around the bell
+and end_NN.png screenshots, then quits. Emulation is NOT deterministic
+between runs (same inputs gave different matches), so experiments must
+capture what they need in a single run.
