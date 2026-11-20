@@ -80,3 +80,15 @@ Debugger: `endtrig` script command saves pre.bin/post.bin around the bell
 and end_NN.png screenshots, then quits. Emulation is NOT deterministic
 between runs (same inputs gave different matches), so experiments must
 capture what they need in a single run.
+
+## In-game hook — WORKING (stage 1)
+- osContGetReadData = 0x800346A8 (single caller: pad update at 0x800058A8,
+  pads at 0x80064880, 4 x 6 bytes). __osContPifRam 0x800A0200,
+  __osMaxControllers 0x800A2614.
+- No Mercy only probes 8 bytes at 0x80400000 / 0x80600000; rest of
+  Expansion RAM is free. Resident module at 0x80410000, mailbox 0x80408000.
+- ROM patches osContGetReadData to "j 0x80410000"; loader copies the
+  resident image at boot (or restores the original 2 instructions if no
+  Expansion Pak). Old boot screen only when Z is held at power-on.
+- Verified in debugger: hook called ~every 2-3 VI frames, menus respond
+  normally through it (reached Exhibition > PLAYER tab).

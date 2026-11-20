@@ -27,3 +27,15 @@ _start:
     .globl orig_entry
 orig_entry:
     .incbin "build/n64/orig_entry.bin"
+
+    # Resident module image (built from n64/resident/), copied to 0x80410000.
+    .section .rodata
+    .balign 4
+    .globl resident_image
+resident_image:
+    .incbin "build/n64/resident.bin"
+resident_image_end:
+    .balign 4
+    .globl resident_image_size
+resident_image_size:
+    .word resident_image_end - resident_image

@@ -12,8 +12,9 @@ N64_CC     = clang
 N64_FLAGS  = --target=mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls -fno-pic \
              -G0 -msoft-float -mno-check-zero-division -ffreestanding -fno-builtin \
              -fno-stack-protector -std=c99 -Os -Wall -Wextra -Werror
-N64_OBJS   = build/n64/crt0.o build/n64/ui.o build/n64/hw.o build/n64/libc.o \
-             build/n64/universe.o build/n64/demo_roster.o
+N64_OBJS   = build/n64/crt0.o build/n64/loader.o build/n64/ui.o build/n64/hw.o \
+             build/n64/libc.o build/n64/universe.o build/n64/demo_roster.o
+RES_OBJS   = build/n64/res_entry.o build/n64/res_resident.o build/n64/res_libc.o
 PAYLOAD_CART = 0x11FB0000
 
 all: build/universe build/test_universe
@@ -39,7 +40,7 @@ build/n64/orig_entry.bin: $(ROM_IN) tools/build_rom.py
 	@mkdir -p build/n64
 	python3 -I tools/build_rom.py extract-entry $(ROM_IN) $@
 
-build/n64/crt0.o: n64/crt0.S build/n64/orig_entry.bin
+build/n64/crt0.o: n64/crt0.S build/n64/orig_entry.bin build/n64/resident.bin
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
 build/n64/%.o: n64/%.c n64/hw.h n64/font.h $(HEADERS)
@@ -51,6 +52,28 @@ build/n64/%.o: engine/%.c $(HEADERS)
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
 build/n64/%.o: host/%.c $(HEADERS)
+	@mkdir -p build/n64
+	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
+
+build/n64/res_entry.o: n64/resident/entry.S
+	@mkdir -p build/n64
+	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
+
+build/n64/res_%.o: n64/resident/%.c n64/resident/resident.h
+	@mkdir -p build/n64
+	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
+
+build/n64/res_libc.o: n64/libc.c
+	@mkdir -p build/n64
+	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
+
+build/n64/resident.elf: $(RES_OBJS) n64/resident/link.ld
+	ld.lld -T n64/resident/link.ld -o $@ $(RES_OBJS)
+
+build/n64/resident.bin: build/n64/resident.elf
+	llvm-objcopy -O binary $< $@
+
+build/n64/loader.o: n64/loader.c n64/hw.h n64/resident/resident.h
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 

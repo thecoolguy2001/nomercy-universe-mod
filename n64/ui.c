@@ -624,7 +624,9 @@ static void handle(uint16_t btn)
     }
 }
 
-void n64_main(void)
+/* The old boot-time Universe screen. Now only shown when Z is held at power-on
+ * (kept for testing until the in-game mode replaces it). */
+void boot_ui_main(void)
 {
     uint16_t prev, now, pressed;
 
@@ -656,5 +658,4 @@ void n64_main(void)
     }
     if (screen != SC_PLAY) pending = U_NONE;
     persist_store();
-    handoff_to_game();
 }

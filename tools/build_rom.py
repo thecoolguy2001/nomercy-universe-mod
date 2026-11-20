@@ -17,6 +17,10 @@ ENTRY_LEN = 0x60            # up to the boot function at 0x80000460
 PAYLOAD_ROM = 0x1FB0000     # inside the 0xFF padding that starts at 0x1FA6B70
 PADDING_START = 0x1FA6B70
 ROM_SIZE = 0x2000000
+# osContGetReadData (RAM 0x800346A8) -> jump to the resident module
+HOOK_ROM = 0x1000 + 0x342A8
+HOOK_ORIG = bytes.fromhex("27bdfff0" "00804821")   # addiu sp,sp,-0x10 ; move t1,a0
+HOOK_NEW = bytes.fromhex("08104000" "00000000")    # j 0x80410000 ; nop
 # First 4 words of the original entry: BSS clear of 0x80056710, 0x68780 bytes
 EXPECTED_ENTRY = bytes.fromhex("3c088005 25086710 3c090007 25298780".replace(" ", ""))
 
@@ -67,6 +71,10 @@ def patch(rom_path, stub_path, payload_path, out_path):
     crc_before = cic6102_crc(rom)
     if crc_before != (int.from_bytes(rom[16:20], "big"), int.from_bytes(rom[20:24], "big")):
         sys.exit("original checksum does not verify; refusing to patch")
+
+    if rom[HOOK_ROM:HOOK_ROM + 8] != HOOK_ORIG:
+        sys.exit("osContGetReadData does not match the expected instructions")
+    rom[HOOK_ROM:HOOK_ROM + 8] = HOOK_NEW
 
     padded = payload + b"\xFF" * (-len(payload) % 8)
     rom[PAYLOAD_ROM:PAYLOAD_ROM + len(padded)] = padded
