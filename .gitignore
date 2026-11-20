@@ -1,0 +1,5 @@
+original/*.z64
+build/
+*.z64
+*.n64
+*.v64
