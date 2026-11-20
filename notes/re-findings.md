@@ -33,10 +33,32 @@ Select (3x3 grid per page, L/R pages) → P1 A, CPU A → match loads.
 
 Writing 0x80159722/24 at frame 4060 (after both picks confirmed) did NOT
 change who wrestled — the match loader had already copied the picks.
-Next: find the copy the loader reads (candidates above), or write the picks
-before the final confirm.
+
+**Working method to choose wrestlers:** write the grid cursor just before
+each confirm press. P1: 0x8015B815 + 0x800AAAB5 before P1's A. CPU:
+0x8015B94D + 0x800AAAB5 + 0x80045849 before the CPU's A. Verified:
+7 vs 4 = Kurt Angle vs Kane, 2 vs 6 = Steve Austin vs Chris Jericho.
+
+Superstars page 1 grid: 0 The Rock, 1 ?, 2 Steve Austin, 3 Undertaker,
+4 Kane, 5 Mankind, 6 Chris Jericho, 7 Kurt Angle, 8 ?.
+("Type N" under the name changes with the pick — probably attire.)
 
 ## Not found yet
 - Match result (winner, method) after the bell.
 - Where match type / arena / player mode are committed for the match.
 - Wrestler ids beyond page 1, unlock flags, menu code for Single Play.
+
+## Match results (in progress)
+Runs: wa3 Rock beat Kane (Watch, ended ~f17000, 2:47), we Mankind beat
+Angle (Watch, pinfall at 2:21, ~f15500), wd P1 Rock idle vs CPU Kane
+(ended ~f36000, 7:57, winner not confirmed), wb3 Austin v Jericho (no
+finish by 7:27). Exhibition Watch matches loop replays after the bell.
+
+| Address | Observation | Status |
+|---|---|---|
+| 0x800436C2 | 0 during every match; after the bell: 1 (wa3), 2 (wd), 0 (we pinfall) | candidate for finish METHOD — needs dense screenshots to confirm |
+| 0x8015A5F6, 0x8015B232 | follow a wrestler id but also change mid-match | probably camera/focus, not winner |
+| 0x8015B1D7, 0x8015A896, 0x8015A932 | change at the end but also during play | unresolved |
+Winner byte not identified yet. Next: shorter controlled matches (e.g.
+low time limit via RULES, or P1 forced loss) with screenshots every 30
+frames around the bell.
