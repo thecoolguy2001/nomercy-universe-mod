@@ -281,3 +281,29 @@ used). Goal: write the match setup directly instead of driving menus.
   Director: entrances, replays and the result screen are left to the
   player; D_RETURN swaps the screen id and opens Universe once the menu is
   up (D_STEER, under a full-screen cover, is only a fallback).
+
+## Straight to Superstar Select (2026-11-21)
+User request: no Exhibition tabs; Superstar Select opens on the card's
+wrestlers, the player confirms (or changes) them, then the loading screen.
+- Screen ids (u16 0x80045844, low byte used): 07 MATCH tab, 06 PLAYER,
+  05 ARENA, 15 RULES, 29 loading transition, 1A Superstar Select, 1B second
+  pick confirmed, 19 "Single Match / A VS B" (waits for A), 2A match,
+  1D result screen (Quit / Rematch, shows time and method e.g. "Pin").
+- START ("Decision") works on the MATCH tab: Universe item (mode byte =
+  Exhibition) -> screen 07 -> START -> 29 -> 1A in about 60 frames.
+  Poking 1A or 29 into the screen id from the main menu does NOT work
+  (No Data grid / stuck): the transition manager (0x800ECB00.., sub-state
+  0x800A0248, target screen u16 0x801596C0) loads the screen's data.
+- Watch vs 1P at Superstar Select: slot byte 0x800AAAD3 (slot 0 +3) is the
+  controller before the picks: 1 human, 0 CPU (slot 1 +3 = 0). The PLAYER
+  tab sets it; the 0x8015971C.. bytes alone only change the tab display.
+- Superstar Select cursor: picker objects at 0x80159860 + 0x138*k, k = 26
+  side 1, 27 side 2 (+4 s16 cell, +0x14 pointer to 0x88-byte cell records,
+  record +0x62 = wrestler id). Picker init 0x801124D0 (a0 = k) starts on
+  page u16 0x800AAAB6 / cell s16 0x800AAAB4. The game rewrites 0x800AAAB4
+  every frame from the active cursor (0x801139C8), so side 2 would start
+  where side 1 confirmed. The resident patches 0x801124D0 (menu overlay,
+  RAM only; 6 words checked first) to j 0x80410028 while the director needs
+  it, and sets page/cell for the side being initialised.
+- Page layout table 0x80047150: [page][12] wrestler numbers, cells 0-8
+  (pages 0-4 = SUPERSTARS 1-5; later entries use another layout).

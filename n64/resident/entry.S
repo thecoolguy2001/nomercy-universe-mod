@@ -4,6 +4,7 @@
 #   0x80410010  play_song hook          (ROM: 0x80017CF4 -> j 0x80410010)
 #   0x80410018  menu text hook          (ROM 0x5AC1C: jal 0x800DDC20 -> jal 0x80410018)
 #   0x80410020  text-image hook         (ROM: 0x80009FFC -> j 0x80410020)
+#   0x80410028  Superstar Select picker init (RAM 0x801124D0, patched at run time)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -32,6 +33,29 @@ text_entry:
     .globl text_seen_entry
 text_seen_entry:
     j       text_seen_hook
+    nop
+
+    .globl picker_init_entry
+picker_init_entry:
+    j       picker_init_hook
+    nop
+
+# Superstar Select picker init (menu overlay 0x801124D0, a0 = picker 26 for
+# side 1, 27 for side 2): it starts the cursor on the saved page/cell, which
+# the director sets to that side's wrestler first.
+picker_init_hook:
+    addiu   $sp, $sp, -0x28
+    sw      $ra, 0x24($sp)
+    sw      $a0, 0x18($sp)
+    jal     ss_picker_init
+    sw      $a1, 0x1C($sp)
+    lw      $ra, 0x24($sp)
+    lw      $a0, 0x18($sp)
+    lw      $a1, 0x1C($sp)
+    addiu   $sp, $sp, 0x28
+    addiu   $sp, $sp, -0x20       # the two instructions the patch replaced
+    sw      $17, 0x14($sp)
+    j       0x801124D8
     nop
 
 # get_text_image(a0 = string | flags, a1 = style) at 0x80009FFC: every

@@ -72,12 +72,12 @@ static void tick(void)
 }
 
 /* ---- Match director: launches a real No Mercy match for a Universe card
- * match and records the result. Route: the Universe item's "mode opened"
- * byte is switched to Exhibition and A is pressed on it; then MATCH ->
- * PLAYER -> ARENA -> RULES -> START. On Superstar Select both picks are
- * confirmed straight away, and the game's own match setup is then written
- * directly: wrestlers, human/CPU control and the title belt on the line.
- * The result is read at the bell. */
+ * match and records the result. The Universe item's "mode opened" byte is
+ * switched to Exhibition and A is pressed on it; as soon as Exhibition's
+ * MATCH tab is up, Single Match and Watch / 1P vs CPU are written and START
+ * ("Decision") goes straight to Superstar Select. Its cursor starts on the
+ * card's wrestlers; the player confirms them (or picks someone else) and
+ * starts the match. The result is read at the bell; a rematch replaces it. */
 enum { D_IDLE, D_ROUTE, D_SELECT, D_INTRO, D_MATCH, D_RETURN, D_STEER, D_DONE, D_FAIL };
 static uint32_t footer_frame;          /* last frame a menu footer was drawn (menus on screen) */
 static void enter_universe(void);
@@ -100,29 +100,28 @@ static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
 #define PLAYER_WATCH      3
 /* Match setup read by the match loader */
 #define SETUP_SLOT(i)     (0x800AAAD0u + 12u * (i))  /* +0 wrestler id (u16, 0xFFxx = not picked) */
-#define SETUP_LIST(i)     (0x800A5568u + 4u * (i))   /* u32 wrestler id per participant */
+#define SLOT_HUMAN        1              /* slot +3 before Superstar Select: controller */
+#define SLOT_CPU          0
 #define SETUP_BELT        0x800AB5B4u    /* s32 belt on the line, -1 = none */
 #define CHAMPION(b)       (0x800A53E2u + 0x34u * (b)) /* wrestler number of the champion */
-#define GAME_SCREEN       0x80045845u    /* screen to show: 2 Multi Play, 3 Single Play, 0x1D result, 0x2A match */
-#define SCREEN_MULTI_PLAY   2
-#define SCREEN_SINGLE_PLAY  3
+#define GAME_SCREEN       0x80045845u    /* screen being shown (low byte of a u16) */
+#define SCREEN_MULTI_PLAY   0x02
+#define SCREEN_SINGLE_PLAY  0x03
+#define SCREEN_EX_MATCH     0x07         /* Exhibition MATCH tab */
+#define SCREEN_LOADING      0x19         /* "Single Match / A VS B" loading screen */
+#define SCREEN_SELECT       0x1A         /* Superstar Select */
+#define SCREEN_RESULT       0x1D
+#define SCREEN_MATCH        0x2A
 #define WRESTLER_TABLE    0x800471C4u    /* [n] (16 bytes): pointer to the record, +0 u16 id */
+/* Superstar Select starts its cursor from these (saved from the last visit) */
+#define SS_SAVED_CELL     0x800AAAB4u    /* s16 grid cell 0-8 */
+#define SS_SAVED_PAGE     0x800AAAB6u    /* u16 page */
+#define SS_PAGES          0x80047150u    /* [page][12] wrestler numbers, 9 cells used */
+#define SS_SUPERSTAR_PAGES 5
 
-typedef struct { uint16_t at; uint16_t buttons; } RouteStep;
-static const RouteStep ROUTE[] = {
-    {   0, B_A     },   /* select the Universe item (now opens Exhibition) */
-    { 160, B_A     },   /* MATCH: Single Match */
-    { 350, B_A     },   /* PLAYER (the choice is written before this press) */
-    { 550, B_A     },   /* ARENA */
-    { 750, B_A     },   /* RULES */
-    { 950, B_START },   /* Decision -> Superstar Select */
-};
-#define ROUTE_END 1000
-
-static uint8_t dstate, dwatch, droute, dpicked, seen_zero;
+static uint8_t dstate, dwatch, seen_zero, seen_result, dresults;
 static uint8_t dwrestler[2], dchampion, dsaved_champion;
 static int     dbelt;
-static uint16_t dsteps;
 static uint32_t dt0, dnext;
 static uint32_t hold_until;
 static uint16_t hold_buttons;
@@ -137,6 +136,66 @@ static uint16_t game_id(uint8_t n)   /* wrestler number -> the id used in the se
     return *(volatile uint16_t *)rec;
 }
 
+static uint8_t game_number(uint16_t id)   /* the reverse; 0 = unknown */
+{
+    unsigned n;
+    for (n = 1; n <= 64; n++)
+        if (game_id((uint8_t)n) == id) return (uint8_t)n;
+    return 0;
+}
+
+/* Superstar Select opens on the page and cell of wrestler n */
+static void preset_cursor(uint8_t n)
+{
+    unsigned p, c;
+    for (p = 0; p < SS_SUPERSTAR_PAGES; p++)
+        for (c = 0; c < 9; c++)
+            if (RAM8(SS_PAGES + 12u * p + c) == n) {
+                *(volatile uint16_t *)SS_SAVED_PAGE = (uint16_t)p;
+                *(volatile uint16_t *)SS_SAVED_CELL = (uint16_t)c;
+                return;
+            }
+}
+
+/* Superstar Select's picker init (menu overlay, in RAM only while the menus
+ * are loaded) is redirected to ss_picker_init while the director needs it. */
+#define PICKER_INIT       0x801124D0u
+#define PICKER_SIDE1      26
+static const uint32_t PICKER_INIT_ORIG[6] = {
+    0x27BDFFE0u, 0xAFB10014u, 0x00808821u, 0xAFB20018u, 0x00A09021u, 0xAFB00010u };
+#define PICKER_INIT_JUMP  0x0810400Au     /* j 0x80410028 */
+
+static void sync_code(uint32_t addr)       /* make a code write visible to the CPU */
+{
+    __asm__ volatile(".set push\n.set mips3\n"
+                     "cache 0x19, 0(%0)\n"   /* write back the data cache line */
+                     "cache 0x10, 0(%0)\n"   /* invalidate the instruction cache line */
+                     ".set pop" : : "r"(addr) : "memory");
+}
+
+static void picker_hook(int on)
+{
+    unsigned i;
+    if (on) {
+        for (i = 0; i < 6; i++)
+            if (RAM32(PICKER_INIT + 4u * i) != PICKER_INIT_ORIG[i]) return;
+        RAM32(PICKER_INIT) = PICKER_INIT_JUMP;
+        RAM32(PICKER_INIT + 4) = 0;
+    } else {
+        if (RAM32(PICKER_INIT) != PICKER_INIT_JUMP || RAM32(PICKER_INIT + 4) != 0) return;
+        RAM32(PICKER_INIT) = PICKER_INIT_ORIG[0];
+        RAM32(PICKER_INIT + 4) = PICKER_INIT_ORIG[1];
+    }
+    sync_code(PICKER_INIT);
+}
+
+void ss_picker_init(int picker)
+{
+    int side = picker - PICKER_SIDE1;
+    if ((dstate == D_ROUTE || dstate == D_SELECT) && (side == 0 || side == 1))
+        preset_cursor(dwrestler[side]);
+}
+
 static void set_player_mode(void)
 {
     unsigned i;
@@ -144,16 +203,17 @@ static void set_player_mode(void)
         RAM8(EX_PLAYER[i]) = dwatch ? PLAYER_WATCH : PLAYER_1P_VS_CPU;
 }
 
-/* Overwrites the confirmed Superstar Select picks with the card's match. */
-static void write_setup(void)
+/* Who controls each side, as the PLAYER tab leaves it for Superstar Select
+ * (only valid before the picks: the byte means something else afterwards) */
+static void set_controllers(void)
 {
-    int s;
-    for (s = 0; s < 2; s++) {
-        uint16_t id = game_id(dwrestler[s]);
-        *(volatile uint16_t *)SETUP_SLOT(s) = id;
-        RAM32(SETUP_LIST(s)) = id;
-    }
-    set_player_mode();
+    RAM8(SETUP_SLOT(0) + 3) = dwatch ? SLOT_CPU : SLOT_HUMAN;
+    RAM8(SETUP_SLOT(1) + 3) = SLOT_CPU;
+}
+
+/* The title on the line (the menu's BELT tab is greyed out on a fresh save) */
+static void write_belt(void)
+{
     RAM32(SETUP_BELT) = (uint32_t)dbelt;
     if (dbelt >= 0) RAM8(CHAMPION(dbelt)) = dchampion;
 }
@@ -163,82 +223,105 @@ static void director_start(int watch)
     us_pending_setup(dwrestler, &dbelt, &dchampion);
     if (dbelt >= 0) dsaved_champion = RAM8(CHAMPION(dbelt));
     dwatch = (uint8_t)watch;
-    droute = 0;
-    dpicked = 0;
-    dsteps = 0;
     seen_zero = 0;
+    preset_cursor(dwrestler[0]);
     RAM8(UNIVERSE_ITEM_MODE) = MODE_EXHIBITION;
+    us_cover(1);
+    press(B_A);
     dt0 = frames;
     dstate = D_ROUTE;
 }
 
+/* Back on the menus for good: the game's own title records stay as they were */
 static void director_end_match(void)
 {
-    /* the game's own title records stay as they were */
     if (dbelt >= 0) RAM8(CHAMPION(dbelt)) = dsaved_champion;
     RAM32(SETUP_BELT) = 0xFFFFFFFFu;
+    us_match_closed();
+}
+
+/* Who actually wrestled: the game numbers of both sides (0 = unknown) */
+static void actual_wrestlers(uint8_t n[2])
+{
+    int s;
+    for (s = 0; s < 2; s++) n[s] = game_number(*(volatile uint16_t *)SETUP_SLOT(s));
 }
 
 static void director_tick(void)
 {
     uint32_t t = frames - dt0;
+    uint8_t screen = RAM8(GAME_SCREEN);
     switch (dstate) {
     case D_ROUTE:
-        if (t < 160) RAM8(EX_MATCH_CURSOR) = 0;          /* Single Match */
-        if (t >= 200 && t < 350) set_player_mode();      /* Watch or 1P vs CPU */
-        while (droute < sizeof ROUTE / sizeof ROUTE[0] && t >= ROUTE[droute].at)
-            press(ROUTE[droute++].buttons);
+        /* Universe item -> Exhibition MATCH tab -> START -> Superstar Select */
         if (t >= 60) RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;  /* restore the menu item */
-        if (t >= ROUTE_END) { dstate = D_SELECT; dnext = frames; dsteps = 0; }
+        if (screen == SCREEN_EX_MATCH) {
+            RAM8(EX_MATCH_CURSOR) = 0;                 /* Single Match */
+            set_player_mode();                         /* Watch or 1P vs CPU */
+            set_controllers();
+            if (frames >= dnext) { press(B_START); dnext = frames + 20; }
+        } else {
+            dnext = frames + 6;                        /* let the tab settle first */
+        }
+        if (screen == SCREEN_SELECT) {
+            us_cover(0);
+            dstate = D_SELECT;
+            dt0 = frames;
+        } else if (t > 900) {
+            us_cover(0);
+            RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;
+            dstate = D_FAIL;
+        }
         break;
     case D_SELECT:
-        /* dpicked: 0 wait for Superstar Select (it empties both slots),
-         * 1 confirm side 1, 2 confirm side 2, 3 write the real setup.
-         * Whatever is highlighted is confirmed - nothing is searched for. */
-        if (dpicked == 3) {
-            write_setup();
-            if (frames - dnext > 60) { dt0 = frames; dstate = D_INTRO; }
-            break;
+        /* The player picks (the cursor starts on the card's wrestlers) and
+         * starts the match; backing out to the main menu cancels. */
+        set_player_mode();
+        write_belt();
+        if (screen == SCREEN_LOADING || screen == SCREEN_MATCH) {
+            dt0 = frames;
+            dstate = D_INTRO;
+        } else if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY) {
+            director_end_match();
+            dstate = D_RETURN;
+            dt0 = frames;
         }
-        if (frames < dnext) break;
-        if (++dsteps > 120) { dstate = D_FAIL; break; }
-        if (dpicked == 0) {
-            if (RAM8(SETUP_SLOT(0)) == 0xFF && RAM8(SETUP_SLOT(1)) == 0xFF) {
-                dpicked = 1;
-                dnext = frames + 40;          /* let the screen settle */
-            } else {
-                dnext = frames + 10;
-            }
-            break;
-        }
-        if (RAM8(SETUP_SLOT(dpicked - 1)) != 0xFF) {   /* that side is confirmed */
-            if (++dpicked == 3) { write_setup(); dnext = frames; break; }
-        }
-        press(B_A);
-        dnext = frames + 45;
         break;
     case D_INTRO:           /* entrances, match, replays: all hands off */
     case D_MATCH: {
         uint8_t r1 = RAM8(RESULT_SIDE1), r2 = RAM8(RESULT_SIDE2);
         if (r1 == 0 && r2 == 0) seen_zero = 1;
         if (seen_zero && (r1 == 4 || r2 == 4)) {
-            us_match_result(r1 == 4 ? 0 : 1, r1 == 4 ? r2 : r1);
-            director_end_match();
+            uint8_t n[2];
+            actual_wrestlers(n);
+            us_match_result(r1 == 4 ? 0 : 1, r1 == 4 ? r2 : r1, n);
+            seen_result = 0;
+            dresults++;
             dstate = D_RETURN;
             dt0 = frames;
-            dnext = frames + 300;
         } else if (dstate == D_INTRO && t > 2800) {
             dstate = D_MATCH;
         }
         break;
     }
     case D_RETURN:
-        /* Hands off: the player watches the replays and picks Exit (or
-         * Rematch) on the result screen. Exit asks for the Multi Play page
+        /* Hands off: the player watches the replays and picks Exit or
+         * Rematch on the result screen. A rematch goes back to the match
+         * (its result replaces this one). Exit asks for the Multi Play page
          * of the main menu; it is changed to Single Play, where Universe
          * is, and the Universe screen is shown as soon as the menu is up. */
-        if (RAM8(GAME_SCREEN) == SCREEN_MULTI_PLAY) RAM8(GAME_SCREEN) = SCREEN_SINGLE_PLAY;
-        if (frames - dt0 > 60 && frames - footer_frame < 10) {
+        if (screen == SCREEN_RESULT) seen_result = 1;
+        if (seen_result && (screen == SCREEN_LOADING || screen == SCREEN_MATCH)) {
+            seen_zero = 0;                             /* Rematch */
+            dt0 = frames;
+            dstate = D_INTRO;
+            break;
+        }
+        if (screen == SCREEN_MULTI_PLAY) RAM8(GAME_SCREEN) = SCREEN_SINGLE_PLAY;
+        if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY)
+            director_end_match();
+        if (frames - dt0 > 60 && frames - footer_frame < 10 &&
+            (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY)) {
             universe_mode = 1;
             us_cover(1);
             dstate = D_STEER;
@@ -289,7 +372,7 @@ static uint8_t test_hold;
 void universe_draw(void *holder)
 {
     footer_frame = frames;
-    if (universe_mode) us_draw(holder);
+    if (universe_mode || dstate == D_ROUTE) us_draw(holder);
 }
 
 static void enter_universe(void)
@@ -364,9 +447,10 @@ static void universe_frame(OSContPad *pads)
     }
 
     director_tick();
+    picker_hook(dstate == D_ROUTE || dstate == D_SELECT);
     mb->state = dstate;
-    mb->step = (uint8_t)(dsteps | dpicked << 6);
-    if (dstate == D_ROUTE || dstate == D_SELECT || dstate == D_STEER)
+    mb->step = dresults;                  /* match results recorded (debug) */
+    if (dstate == D_ROUTE || dstate == D_STEER)
         pads[0].button = 0;                /* menus: only the director presses buttons */
     if (frames < hold_until) pads[0].button |= hold_buttons;
 }

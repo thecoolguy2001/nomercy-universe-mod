@@ -204,18 +204,40 @@ void us_pending_setup(uint8_t game_wrestler[2], int *belt, uint8_t *champion)
     }
 }
 
-/* Result of a match played/watched in No Mercy. The loser's result byte
- * says how they lost; 1 = pinned (seen on every pinfall so far). */
-void us_match_result(int winner_side, int loser_code)
+/* Universe wrestler for a No Mercy wrestler number (U_NONE if not in it) */
+static uint8_t universe_wrestler(uint8_t game_n)
+{
+    int i;
+    if (!game_n) return U_NONE;
+    for (i = 0; i < U.n_wrestlers; i++)
+        if (demo_game_index((uint8_t)i) == game_n) return (uint8_t)i;
+    return U_NONE;
+}
+
+/* Result of a match played/watched in No Mercy. game_n: who actually
+ * wrestled on each side (the player may change the picks on Superstar
+ * Select); a wrestler from the universe replaces the card's one. The
+ * loser's result byte says how they lost; 1 = pinned (seen on every
+ * pinfall so far). A rematch calls this again and replaces the result. */
+void us_match_result(int winner_side, int loser_code, const uint8_t game_n[2])
 {
     UMatch *m;
+    uint8_t w[2];
+    int s;
     if (pending == U_NONE) return;
     m = &SHOW.m[pending];
+    for (s = 0; s < 2; s++) {
+        w[s] = universe_wrestler(game_n[s]);
+        if (w[s] == U_NONE) w[s] = m->side[s][0];
+    }
+    if (w[0] != w[1]) { m->side[0][0] = w[0]; m->side[1][0] = w[1]; }
     u_set_result(m, (uint8_t)winner_side,
                  m->stip == U_STIP_LADDER ? U_WIN_SPECIAL : U_WIN_PINFALL);
     (void)loser_code;
-    pending = U_NONE;
 }
+
+/* The game is back on the menus: no more results for this match */
+void us_match_closed(void) { pending = U_NONE; }
 
 static uint8_t cover;      /* full-screen while the menu is steered back underneath */
 void us_cover(int on) { cover = (uint8_t)on; }
