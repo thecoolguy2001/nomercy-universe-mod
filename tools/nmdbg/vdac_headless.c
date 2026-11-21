@@ -77,7 +77,7 @@ static uint32_t hold_buttons, hold_until;
 
 /* end-of-match trigger */
 #define RING 6
-static int endtrig_on, endtrig_fired;
+static int endtrig_on, endtrig_fired, endtrig_keep;
 static uint32_t clk_last, clk_change_frame, end_frame;
 static uint8_t *ring[RING];
 static uint32_t ring_frame[RING];
@@ -146,6 +146,7 @@ static void endtrig_tick(void)
         ring_frame[ring_pos] = frame;
         ring_pos = (ring_pos + 1) % RING;
     }
+    if (endtrig_fired && endtrig_keep) return;
     if (endtrig_fired) {
         if ((frame - end_frame) % 30 == 0) {
             snprintf(path, sizeof path, "%s/end_%02u.png", outdir, (frame - end_frame) / 30);
@@ -174,6 +175,11 @@ static void endtrig_tick(void)
                 best = k;
         endtrig_fired = 1;
         end_frame = frame;
+        if (endtrig_keep) {            /* rebase "after the bell" commands (frame >= 90000) */
+            int k;
+            for (k = next_cmd; k < ncmds; k++)
+                if (cmds[k].frame >= 90000) cmds[k].frame = end_frame + (cmds[k].frame - 90000);
+        }
         printf("[nmdbg] frame %u MATCH END: clock %u:%02u froze at frame %u, pre snapshot frame %u\n",
                frame, clk / 60, clk % 60, clk_change_frame, best >= 0 ? ring_frame[best] : 0);
         if (best >= 0) save_ram("pre", ring[best]);
@@ -293,6 +299,7 @@ static void run_cmd(const Cmd *c)
         texlog_until = frame + (uint32_t)atoi(c->a);
     } else if (!strcmp(c->cmd, "endtrig")) {
         endtrig_on = 1;
+        endtrig_keep = !strcmp(c->a, "keep");   /* keep running; frames >= 90000 are relative to the bell */
         clk_change_frame = frame;
     } else if (!strcmp(c->cmd, "quit")) {
         printf("[nmdbg] frame %u quit\n", frame);

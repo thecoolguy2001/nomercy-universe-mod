@@ -229,3 +229,11 @@ pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.
   (Big Show is not in No Mercy.)
 - Verified: Z on a card match -> Exhibition -> Watch -> both wrestlers
   picked by name (Val Venis, X-Pac) -> match starts.
+- After a Watch match: replays loop until START; START -> white
+  transition -> main menu wheel (Multi Play page). Director phase
+  D_RETURN presses START, waits until the menu footer is being drawn
+  (footer hook = "a menu is on screen"; the Single Play record keeps stale
+  values during matches), steers the wheel (R from Multi, L from
+  Commissioner, D-down to cursor 2) and reopens the Universe screen.
+- Debugger: `endtrig keep` keeps running after the bell and rebases script
+  commands with frame >= 90000 to "bell + (frame - 90000)".

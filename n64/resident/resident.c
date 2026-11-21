@@ -34,6 +34,14 @@
 #define B_START  0x1000
 #define B_DDOWN  0x0400
 
+/* Single Play menu record: +0x08 menu-table entry pointer, +0x0C u16
+ * cursor, +0x18 u32 wheel page (0x00 Single Play, 0x01 Commissioner,
+ * 0x10 Multi Play). Universe is the third Single Play item (cursor 2). */
+#define SP_RECORD       0x80159C00u
+#define SP_TABLE_ENTRY  0x8014F4E0u
+#define PAGE_SINGLE     0x00
+#define B_B      0x4000
+
 #define COUNTS_PER_FRAME 781250u
 
 /* Game music: play_song(song, mode, volume) at 0x80017CF4. Menus call it
@@ -68,12 +76,15 @@ static void tick(void)
  * byte is switched to Exhibition and A is pressed on it; then MATCH ->
  * PLAYER -> ARENA -> RULES -> START; wrestlers are picked with feedback
  * from the highlighted-wrestler pointer; the result is read at the bell. */
-enum { D_IDLE, D_ROUTE, D_PICK1, D_PICK2, D_INTRO, D_MATCH, D_DONE, D_FAIL };
+enum { D_IDLE, D_ROUTE, D_PICK1, D_PICK2, D_INTRO, D_MATCH, D_RETURN, D_DONE, D_FAIL };
+static uint32_t footer_frame;          /* last frame a menu footer was drawn (menus on screen) */
+static void enter_universe(void);
 
 #define UNIVERSE_ITEM_MODE  0x8040903Fu  /* byte 19 of the 3rd Single Play item */
 #define MODE_SURVIVAL       0x03
 #define MODE_EXHIBITION     0x02
 #define B_R      0x0010
+#define B_L      0x0020
 #define B_Z      0x2000
 #define B_DLEFT  0x0200
 #define B_DRIGHT 0x0100
@@ -185,12 +196,35 @@ static void director_tick(void)
         if (r1 == 0 && r2 == 0) seen_zero = 1;
         if (seen_zero && (r1 == 4 || r2 == 4)) {
             us_match_result(r1 == 4 ? 0 : 1, r1 == 4 ? r2 : r1);
-            dstate = D_DONE;
+            dstate = D_RETURN;
+            dt0 = frames;
+            dnext = frames + 300;
         } else if (dstate == D_INTRO && t > 2800) {
             dstate = D_MATCH;
         }
         break;
     }
+    case D_RETURN:
+        /* After the bell: START skips the replays; once a menu is on screen,
+         * steer the main-menu wheel to Single Play > Universe and reopen it. */
+        if (frames < dnext) break;
+        if (t > 9000) { dstate = D_FAIL; break; }
+        if (frames - footer_frame > 10) {           /* still in the match / replay */
+            press(B_START);
+            dnext = frames + 240;
+            break;
+        }
+        {
+            uint32_t page = RAM32(SP_RECORD + 0x18);
+            uint16_t cur = *(volatile uint16_t *)(SP_RECORD + 0x0C);
+            if (page == 0x10) press(B_R);            /* Multi Play -> Single Play */
+            else if (page == 0x01) press(B_L);       /* Commissioner -> Single Play */
+            else if (page == 0x00 && cur != 2) press(B_DDOWN);
+            else if (page == 0x00) { dstate = D_DONE; enter_universe(); break; }
+            else press(B_B);                         /* some other screen: back out */
+            dnext = frames + 90;
+        }
+        break;
     default:
         break;
     }
@@ -203,7 +237,6 @@ typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
                              int alpha, int style, int flags);
 #define DRAW_TEXT ((draw_text_fn)0x800DDC20u)
 
-#define B_B      0x4000
 #define B_DUP    0x0800
 
 static uint8_t universe_mode;      /* 1 while the player is inside Universe */
@@ -213,15 +246,16 @@ static uint8_t test_hold;
 
 void universe_draw(void *holder)
 {
+    footer_frame = frames;
     if (universe_mode) us_draw(holder);
 }
 
-/* Single Play menu record: +0x08 menu-table entry pointer, +0x0C u16
- * cursor, +0x18 u32 wheel page (0x00 Single Play, 0x01 Commissioner,
- * 0x10 Multi Play). Universe is the third Single Play item (cursor 2). */
-#define SP_RECORD       0x80159C00u
-#define SP_TABLE_ENTRY  0x8014F4E0u
-#define PAGE_SINGLE     0x00
+static void enter_universe(void)
+{
+    universe_mode = 1;
+    us_enter(cp0_count());
+}
+
 
 static int universe_highlighted(void)
 {
@@ -262,8 +296,7 @@ static void universe_frame(OSContPad *pads)
             if (swallow) {
                 if (btn) pads[0].button = 0; else swallow = 0;
             } else if (universe_highlighted() && (pressed & B_A)) {
-                universe_mode = 1;          /* enter Universe; the game never sees this A */
-                us_enter(cp0_count());
+                enter_universe();           /* the game never sees this A */
                 pads[0].button = 0;
             }
         } else {
@@ -292,7 +325,7 @@ static void universe_frame(OSContPad *pads)
     mb->state = dstate;
     mb->step = (uint8_t)dsteps;
     if (dstate != D_IDLE && dstate != D_DONE && dstate != D_FAIL &&
-        !(dstate >= D_INTRO && !dwatch))
+        !((dstate == D_INTRO || dstate == D_MATCH) && !dwatch))
         pads[0].button = 0;                /* menus: only the director presses buttons */
     if (frames < hold_until) pads[0].button |= hold_buttons;
 }
