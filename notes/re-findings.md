@@ -313,3 +313,8 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   frame's final FullSync/EndDisplayList (F3DEX2 0xDF) and sends the gfx
   task; ROM 0x39E4 -> j 0x80410030, the resident appends the full-screen
   cover there while it is on.
+- Backing out of Superstar Select (B) sets the transition target u16
+  0x801596C0 to 07 (MATCH tab) and runs screen 29. Changing the target to
+  03 lands on the Single Play page; the director then reopens Universe
+  under the cover. Exit after a match is covered the same way (cover on
+  from the 2 -> 3 swap until Universe is open).

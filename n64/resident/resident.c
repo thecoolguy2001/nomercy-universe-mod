@@ -17,6 +17,7 @@
 #define MAILBOX   ((volatile Mailbox *)MAILBOX_ADDR)
 
 #define RAM8(a)   (*(volatile uint8_t *)(a))
+#define RAM16(a)  (*(volatile uint16_t *)(a))
 #define RAM32(a)  (*(volatile uint32_t *)(a))
 
 /* Game state found with the debugger (notes/re-findings.md) */
@@ -112,6 +113,7 @@ static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
 #define SCREEN_SELECT       0x1A         /* Superstar Select */
 #define SCREEN_RESULT       0x1D
 #define SCREEN_MATCH        0x2A
+#define NEXT_SCREEN       0x801596C0u    /* u16 screen the loading transition goes to */
 #define WRESTLER_TABLE    0x800471C4u    /* [n] (16 bytes): pointer to the record, +0 u16 id */
 /* Superstar Select starts its cursor from these (saved from the last visit) */
 #define SS_SAVED_CELL     0x800AAAB4u    /* s16 grid cell 0-8 */
@@ -275,10 +277,19 @@ static void director_tick(void)
         break;
     case D_SELECT:
         /* The player picks (the cursor starts on the card's wrestlers) and
-         * starts the match; backing out to the main menu cancels. */
+         * starts the match. Backing out (B) would go to Exhibition's MATCH
+         * tab: the transition's target screen is changed to the Single Play
+         * page instead, and Universe reopens under the cover. */
         set_player_mode();
         write_belt();
-        if (screen == SCREEN_LOADING || screen == SCREEN_MATCH) {
+        if (RAM16(NEXT_SCREEN) == SCREEN_EX_MATCH) {
+            RAM16(NEXT_SCREEN) = SCREEN_SINGLE_PLAY;
+            us_cover(1);
+            director_end_match();
+            seen_result = 0;
+            dstate = D_RETURN;
+            dt0 = frames;
+        } else if (screen == SCREEN_LOADING || screen == SCREEN_MATCH) {
             dt0 = frames;
             dstate = D_INTRO;
         } else if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY) {
@@ -318,8 +329,10 @@ static void director_tick(void)
             break;
         }
         if (screen == SCREEN_MULTI_PLAY) RAM8(GAME_SCREEN) = SCREEN_SINGLE_PLAY;
-        if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY)
+        if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY) {
+            us_cover(1);                               /* until Universe is open */
             director_end_match();
+        }
         if (frames - dt0 > 60 && frames - footer_frame < 10 &&
             (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY)) {
             universe_mode = 1;
