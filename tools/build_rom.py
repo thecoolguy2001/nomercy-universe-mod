@@ -33,6 +33,11 @@ SONG_HOOK_NEW = bytes.fromhex("08104004" "00000000")     # j 0x80410010 ; nop
 TEXTIMG_HOOK_ROM = 0xABFC
 TEXTIMG_HOOK_ORIG = bytes.fromhex("27bdffb0" "afb60048")
 TEXTIMG_HOOK_NEW = bytes.fromhex("08104008" "00000000")  # j 0x80410020 ; nop
+# End of each frame's display list (RAM 0x80002DE4, a1 = where the final
+# FullSync/EndDisplayList go) -> resident: the full-screen cover is appended
+DLEND_HOOK_ROM = 0x1000 + 0x29E4
+DLEND_HOOK_ORIG = bytes.fromhex("27bdffe8" "00a04821")
+DLEND_HOOK_NEW = bytes.fromhex("0810400c" "00000000")    # j 0x80410030 ; nop
 # Menu overlay (code segment stored at ROM = RAM - 0x80083AE0): the per-frame
 # draw_text call at RAM 0x800DE6FC -> resident text hook
 TEXT_HOOK_ROM = 0x5AC1C
@@ -111,6 +116,10 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
     if rom[TEXTIMG_HOOK_ROM:TEXTIMG_HOOK_ROM + 8] != TEXTIMG_HOOK_ORIG:
         sys.exit("get_text_image does not match the expected instructions")
     rom[TEXTIMG_HOOK_ROM:TEXTIMG_HOOK_ROM + 8] = TEXTIMG_HOOK_NEW
+
+    if rom[DLEND_HOOK_ROM:DLEND_HOOK_ROM + 8] != DLEND_HOOK_ORIG:
+        sys.exit("display list end does not match the expected instructions")
+    rom[DLEND_HOOK_ROM:DLEND_HOOK_ROM + 8] = DLEND_HOOK_NEW
 
     if rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] != TEXT_HOOK_ORIG:
         sys.exit("menu text call does not match the expected instruction")

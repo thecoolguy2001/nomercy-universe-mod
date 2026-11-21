@@ -5,6 +5,7 @@
 #   0x80410018  menu text hook          (ROM 0x5AC1C: jal 0x800DDC20 -> jal 0x80410018)
 #   0x80410020  text-image hook         (ROM: 0x80009FFC -> j 0x80410020)
 #   0x80410028  Superstar Select picker init (RAM 0x801124D0, patched at run time)
+#   0x80410030  display list end        (ROM: 0x80002DE4 -> j 0x80410030)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -38,6 +39,33 @@ text_seen_entry:
     .globl picker_init_entry
 picker_init_entry:
     j       picker_init_hook
+    nop
+
+    .globl dl_end_entry
+dl_end_entry:
+    j       dl_end_hook
+    nop
+
+# 0x80002DE4(a0, a1 = display list position, a2, a3) writes the frame's
+# final FullSync / EndDisplayList at a1 and sends the task. dl_end may add
+# commands first (the full-screen cover) and returns the new position.
+dl_end_hook:
+    addiu   $sp, $sp, -0x28
+    sw      $ra, 0x24($sp)
+    sw      $a0, 0x18($sp)
+    sw      $a2, 0x20($sp)
+    sw      $a3, 0x14($sp)
+    jal     dl_end
+    move    $a0, $a1
+    move    $a1, $v0
+    lw      $ra, 0x24($sp)
+    lw      $a0, 0x18($sp)
+    lw      $a2, 0x20($sp)
+    lw      $a3, 0x14($sp)
+    addiu   $sp, $sp, 0x28
+    addiu   $sp, $sp, -0x18       # the two instructions the ROM patch replaced
+    move    $9, $5
+    j       0x80002DEC
     nop
 
 # Superstar Select picker init (menu overlay 0x801124D0, a0 = picker 26 for

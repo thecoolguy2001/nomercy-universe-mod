@@ -242,17 +242,23 @@ void us_match_closed(void) { pending = U_NONE; }
 static uint8_t cover;      /* full-screen while the menu is steered back underneath */
 void us_cover(int on) { cover = (uint8_t)on; }
 
+/* Called at the end of every frame's display list: while the menus change
+ * underneath, the whole screen is covered (on every frame, including the
+ * first frames of a new menu, before it draws any text of its own). */
+void us_draw_cover(void *holder)
+{
+    if (!cover) return;
+    panel(holder, 0, 0, 480, 240);
+    text(holder, "UNIVERSE", 110);
+}
+
 void us_draw(void *holder)
 {
     static char line[12][LINE_LEN];
     Str s;
     int i, y;
 
-    if (cover) {
-        panel(holder, 0, 0, 480, 240);
-        text(holder, "UNIVERSE", 110);
-        return;
-    }
+    if (cover) return;                    /* drawn over the whole frame instead */
     panel(holder, 250, 8, 476, 228);
     text(holder, "UNIVERSE", 22);
     s_init(&s, line[0], LINE_LEN);

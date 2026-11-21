@@ -307,3 +307,9 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   it, and sets page/cell for the side being initialised.
 - Page layout table 0x80047150: [page][12] wrestler numbers, cells 0-8
   (pages 0-4 = SUPERSTARS 1-5; later entries use another layout).
+- Cover fix: the footer text hook isn't called during the first frames of a
+  freshly loaded menu (first Exhibition visit after boot showed the MATCH
+  tab for ~6 frames). 0x80002DE4(a0, a1 = DL position, ...) writes every
+  frame's final FullSync/EndDisplayList (F3DEX2 0xDF) and sends the gfx
+  task; ROM 0x39E4 -> j 0x80410030, the resident appends the full-screen
+  cover there while it is on.

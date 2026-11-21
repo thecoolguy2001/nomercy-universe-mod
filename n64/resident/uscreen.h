@@ -4,6 +4,7 @@
 void us_enter(uint32_t seed);          /* create/continue the universe, book a card */
 int  us_input(uint16_t pressed);       /* 0 = leave, 1 = stay, 2 = play/watch the pending match */
 void us_draw(void *holder);
+void us_draw_cover(void *holder);      /* full-screen cover, at the end of the frame */
 void us_cover(int on);                 /* 1: cover the whole screen (menu being steered) */
 const char *us_pending_name(int side); /* game name of a side of the match to play */
 int  us_pending_watch(void);           /* 1 = Watch (CPU vs CPU), 0 = Play */

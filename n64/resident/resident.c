@@ -372,7 +372,14 @@ static uint8_t test_hold;
 void universe_draw(void *holder)
 {
     footer_frame = frames;
-    if (universe_mode || dstate == D_ROUTE) us_draw(holder);
+    if (universe_mode) us_draw(holder);
+}
+
+/* End of the frame's display list (hook at 0x80002DE4) */
+uint32_t *dl_end(uint32_t *g)
+{
+    us_draw_cover(&g);
+    return g;
 }
 
 static void enter_universe(void)

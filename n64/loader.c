@@ -26,6 +26,10 @@ void boot_ui_main(void);
 #define TEXT_HOOK_ADDR  0x80009FFCu
 #define TEXT_ORIG_0     0x27BDFFB0u  /* addiu sp, sp, -0x50 */
 #define TEXT_ORIG_1     0xAFB60048u  /* sw s6, 0x48(sp) */
+/* Display list end in RAM; the ROM has "j 0x80410030; nop" here. */
+#define DLEND_HOOK_ADDR 0x80002DE4u
+#define DLEND_ORIG_0    0x27BDFFE8u  /* addiu sp, sp, -0x18 */
+#define DLEND_ORIG_1    0x00A04821u  /* move  t1, a1 */
 
 static void install_resident(void)
 {
@@ -73,6 +77,9 @@ static void remove_hook(void)
     shook[1] = SONG_ORIG_1;
     thook[0] = TEXT_ORIG_0;
     thook[1] = TEXT_ORIG_1;
+    volatile uint32_t *dhook = (volatile uint32_t *)(0xA0000000u | (DLEND_HOOK_ADDR & 0x1FFFFFFFu));
+    dhook[0] = DLEND_ORIG_0;
+    dhook[1] = DLEND_ORIG_1;
 }
 
 void n64_main(void)
