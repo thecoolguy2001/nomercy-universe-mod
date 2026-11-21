@@ -147,5 +147,25 @@ match (verified: Undertaker picked, match started, state=IN_MATCH).
   icon escape), match types, championship names, options words.
 - String pointer table at 0x800F4794 (Instructions, Random, Option,
   Decision, ..., Watch at 0x800F47D4).
-- Draw-text routine NOT found yet (searching for the '$' escape check gave
-  only a layout routine at 0x8012D0B0 using 0x24/0x26/0x28 as sizes).
+- Text pipeline (main code, always resident) found with read watchpoints:
+  * 0x800086C0  char -> value ('0'-'9','a'-'z','A'-'Z' = 0..35), used
+    for the $x escapes.
+  * 0x80008724  string signature: record {+0 str ptr, +0x12 flags,
+    +0x14 length, +0x18 checksum}.
+  * 0x80009F18  lookup in a 128-slot rendered-text cache (slot 0x1C bytes,
+    table pointer at 0x800931B4) by (str, style, length, checksum).
+  * 0x80009FFC  get text texture: a0 = string | flags (high bits),
+    a1 = style; renders new text via 0x80009760. Called by menu overlay
+    code at 0x800E0880, which then adds the slot to the overlay's own
+    draw list (0x800E07BC / 0x800E08EC).
+- Font text is used for footers ("$4Instructions"), Superstar Select
+  names and the match intro; the main-menu and Exhibition tab item lists
+  are pre-drawn label images (no reads of "Single Match" on the MATCH tab).
+
+## Debugger with breakpoints
+NMDBG_DEBUG=1 run.sh ... < /dev/null uses a DEBUGGER=1 core
+(/root/n64tools/mupen64plus-core-dbg) launched with --debug in the pure
+interpreter; the video plugin replaces ui-console's debugger callbacks.
+Script: `bpx ADDR` (virtual), `bpr/bpw ADDR LEN` (converted to PHYSICAL
+addresses - mupen memory bps match physical), `bplimit N`. Each hit logs
+pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.

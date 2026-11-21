@@ -19,6 +19,9 @@
  *                                 stays frozen 150 frames: write pre.bin (>=180 frames
  *                                 before the freeze) and post.bin, shoot end_NN.png
  *                                 every 30 frames for 600 frames, then quit
+ *   bpr ADDR LEN / bpw ADDR LEN   memory read / write breakpoint (debugger core)
+ *   bpx ADDR                      execution breakpoint (debugger core)
+ *   bplimit N                     stop logging (and remove breakpoints) after N hits
  *   quit                          exit the emulator
  *   every N shot PREFIX           (frame ignored) screenshot every N frames
  */
@@ -33,6 +36,14 @@
 #include <dlfcn.h>
 
 typedef int (*core_cmd_fn)(int, int, void *);
+/* mupen64plus debugger API (core built with DEBUGGER=1, Core[EnableDebugger]) */
+typedef struct { uint32_t address, endaddr; unsigned int flags; } bkp_t;
+static int (*dbg_set_callbacks)(void (*)(void), void (*)(unsigned int), void (*)(void));
+static int (*dbg_set_runstate)(int);
+static int (*dbg_step)(void);
+static int (*dbg_bkp_cmd)(int, unsigned int, bkp_t *);
+static void *(*dbg_cpu_ptr)(int);
+static uint32_t bp_hits, bp_limit = 200;
 static core_cmd_fn core_cmd;
 #define M64CMD_STATE_LOAD 6
 #define M64CMD_STATE_SAVE 7
@@ -51,6 +62,9 @@ static Cmd cmds[MAX_CMDS];
 static int ncmds, next_cmd;
 static uint32_t frame;
 static uint8_t *rdram;
+static uint8_t *dmem;
+static uint32_t **dp_reg;
+static uint32_t texlog_until;
 static uint32_t rdram_size;
 static const char *outdir = ".";
 static uint32_t every_n;
@@ -249,6 +263,25 @@ static void run_cmd(const Cmd *c)
         } else {
             printf("[nmdbg] no core handle for %s\n", c->cmd);
         }
+    } else if (!strcmp(c->cmd, "bpr") || !strcmp(c->cmd, "bpw") || !strcmp(c->cmd, "bpx")) {
+        bkp_t b;
+        uint32_t a = (uint32_t)strtoul(c->a, NULL, 16);
+        uint32_t n = c->b[0] ? (uint32_t)strtoul(c->b, NULL, 0) : 4;
+        if (!dbg_bkp_cmd) { printf("[nmdbg] no debugger core\n"); return; }
+        if (c->cmd[2] != 'x') {           /* memory bps match physical addresses */
+            uint32_t end = (a & 0x1FFFFFFF) + n - 1;
+            a = (a & 0x1FFFFFFF) & ~3u;
+            n = end - a + 1;
+        }
+        b.address = a;
+        b.endaddr = c->cmd[2] == 'x' ? a : a + n - 1;
+        b.flags = 0x01 | (c->cmd[2] == 'r' ? 0x02 : c->cmd[2] == 'w' ? 0x04 : 0x08);
+        printf("[nmdbg] frame %u %s %08X-%08X -> %d\n", frame, c->cmd, b.address, b.endaddr,
+               dbg_bkp_cmd(2 /* ADD_STRUCT */, 0, &b));
+    } else if (!strcmp(c->cmd, "bplimit")) {
+        bp_limit = (uint32_t)atoi(c->a);
+    } else if (!strcmp(c->cmd, "texlog")) {
+        texlog_until = frame + (uint32_t)atoi(c->a);
     } else if (!strcmp(c->cmd, "endtrig")) {
         endtrig_on = 1;
         clk_change_frame = frame;
@@ -283,12 +316,55 @@ static void load_script(void)
     printf("[nmdbg] %d script commands\n", ncmds);
 }
 
+static int dbg_started;
+static void dbg_ui_init(void) {}
+static void dbg_ui_vi(void) {}
+static void dbg_ui_update(unsigned int pc)
+{
+    if (dbg_started) {
+        int64_t *r = dbg_cpu_ptr ? (int64_t *)dbg_cpu_ptr(2 /* M64P_CPU_REG_REG */) : NULL;
+        bp_hits++;
+        if (bp_hits <= bp_limit && r)
+            printf("[bp] frame %u pc=%08X ra=%08X a0=%08X a1=%08X a2=%08X a3=%08X v0=%08X sp=%08X\n",
+                   frame, pc, (uint32_t)r[31], (uint32_t)r[4], (uint32_t)r[5], (uint32_t)r[6],
+                   (uint32_t)r[7], (uint32_t)r[2], (uint32_t)r[29]);
+        if (bp_hits == bp_limit) {
+            unsigned int i;
+            printf("[bp] limit reached, removing breakpoints\n");
+            for (i = 0; i < 64; i++) dbg_bkp_cmd(5 /* REMOVE_IDX */, 0, NULL);
+        }
+    }
+    dbg_started = 1;
+    dbg_set_runstate(2 /* RUNNING */);
+    dbg_step();
+}
+
+static void dbg_attach(void)
+{
+    void *h = dlopen(getenv("NMDBG_CORE_SO"), RTLD_NOW | RTLD_NOLOAD);
+    if (!h) return;
+    dbg_set_callbacks = (int (*)(void (*)(void), void (*)(unsigned int), void (*)(void)))dlsym(h, "DebugSetCallbacks");
+    dbg_set_runstate = (int (*)(int))dlsym(h, "DebugSetRunState");
+    dbg_step = (int (*)(void))dlsym(h, "DebugStep");
+    dbg_bkp_cmd = (int (*)(int, unsigned int, bkp_t *))dlsym(h, "DebugBreakpointCommand");
+    dbg_cpu_ptr = (void *(*)(int))dlsym(h, "DebugGetCPUDataPtr");
+    if (dbg_set_callbacks && dbg_set_runstate && dbg_step) {
+        dbg_set_callbacks(dbg_ui_init, dbg_ui_update, dbg_ui_vi);
+        printf("[nmdbg] debugger attached\n");
+    } else {
+        dbg_bkp_cmd = NULL;
+    }
+}
+
 void vdac_init(struct n64video_config *config)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
     rdram = config->gfx.rdram;
+    dmem = config->gfx.dmem;
+    dp_reg = config->gfx.dp_reg;
     rdram_size = config->gfx.rdram_size;
     load_script();
+    if (getenv("NMDBG_DEBUG")) dbg_attach();
 }
 
 void vdac_read(struct n64video_frame_buffer *fb, bool alpha)
@@ -333,3 +409,41 @@ void vdac_close(void) {}
 
 void screen_toggle_fullscreen(void) {}
 int32_t win_width = 640, win_height = 480, win_fullscreen;
+
+/* ---- RDP command logging: wraps angrylion's ProcessRDPList ----
+ * Logs Set Texture Image (0x3D), Set Tile (0x35), Load Block (0x33),
+ * Load Tile (0x34) and Texture Rectangle (0x24) while texlog is active. */
+void angry_ProcessRDPList(void);
+__attribute__((visibility("default"))) void ProcessRDPList(void)
+{
+    if (frame < texlog_until && dp_reg) {
+        uint32_t start = *dp_reg[0] & 0xFFFFF8, end = *dp_reg[1] & 0xFFFFF8;
+        int xbus = *dp_reg[3] & 1;
+        uint32_t a;
+        for (a = start; a + 8 <= end; a += 8) {
+            uint32_t w0, w1;
+            if (xbus) {
+                const uint8_t *p = dmem + (a & 0xFF8);
+                w0 = (uint32_t)p[3^0] << 24 | p[3^1] << 16 | p[3^2] << 8 | p[3^3];
+                w1 = (uint32_t)p[4+(3^0)] << 24 | p[4+(3^1)] << 16 | p[4+(3^2)] << 8 | p[4+(3^3)];
+            } else {
+                w0 = (uint32_t)rd8(a) << 24 | rd8(a+1) << 16 | rd8(a+2) << 8 | rd8(a+3);
+                w1 = (uint32_t)rd8(a+4) << 24 | rd8(a+5) << 16 | rd8(a+6) << 8 | rd8(a+7);
+            }
+            switch (w0 >> 24 & 0x3F) {
+            case 0x3D: printf("[tex] f%u SETTIMG fmt=%u siz=%u width=%u addr=%08X\n", frame,
+                              w0 >> 21 & 7, w0 >> 19 & 3, (w0 & 0x3FF) + 1, w1 & 0xFFFFFF); break;
+            case 0x35: printf("[tex] f%u SETTILE fmt=%u siz=%u line=%u tmem=%03X tile=%u pal=%u\n", frame,
+                              w0 >> 21 & 7, w0 >> 19 & 3, w0 >> 9 & 0x1FF, w0 & 0x1FF, w1 >> 24 & 7, w1 >> 20 & 15); break;
+            case 0x33: printf("[tex] f%u LOADBLOCK tile=%u texels=%u\n", frame, w1 >> 24 & 7, (w1 >> 12 & 0xFFF) + 1); break;
+            case 0x34: printf("[tex] f%u LOADTILE tile=%u s=%u..%u t=%u..%u\n", frame, w1 >> 24 & 7,
+                              (w0 >> 12 & 0xFFF) >> 2, (w1 >> 12 & 0xFFF) >> 2, (w0 & 0xFFF) >> 2, (w1 & 0xFFF) >> 2); break;
+            case 0x30: printf("[tex] f%u LOADTLUT tile=%u\n", frame, w1 >> 24 & 7); break;
+            case 0x24: case 0x25: printf("[tex] f%u TEXRECT x=%u..%u y=%u..%u tile=%u\n", frame,
+                              (w1 >> 12 & 0xFFF) >> 2, (w0 >> 12 & 0xFFF) >> 2, (w1 & 0xFFF) >> 2, (w0 & 0xFFF) >> 2, w1 >> 24 & 7);
+                       a += 8; break;
+            }
+        }
+    }
+    angry_ProcessRDPList();
+}
