@@ -184,6 +184,26 @@ const char *us_pending_name(int side)
 
 int us_pending_watch(void) { return pending_watch; }
 
+/* No Mercy belt for each Universe title (demo roster order: WWF, IC, Tag,
+ * European); the game's belts are 0 WWF, 1 Tag, 2 IC, 3 European,
+ * 4 Hardcore, 5 Light Heavyweight, 6 Women's. */
+static const int8_t GAME_BELT[] = { 0, 2, 1, 3, -1, -1 };
+
+void us_pending_setup(uint8_t game_wrestler[2], int *belt, uint8_t *champion)
+{
+    const UMatch *m = &SHOW.m[pending];
+    int s;
+    for (s = 0; s < 2; s++) game_wrestler[s] = demo_game_index(m->side[s][0]);
+    *belt = -1;
+    *champion = 0;
+    if (m->title != U_NONE && m->title < sizeof GAME_BELT && GAME_BELT[m->title] >= 0 &&
+        U.t[m->title].kind == U_TITLE_SINGLES) {
+        uint8_t h = u_title_holder(&U, m->title);
+        *belt = GAME_BELT[m->title];
+        *champion = h == U_NONE ? 0 : demo_game_index(h);
+    }
+}
+
 /* Result of a match played/watched in No Mercy. The loser's result byte
  * says how they lost; 1 = pinned (seen on every pinfall so far). */
 void us_match_result(int winner_side, int loser_code)

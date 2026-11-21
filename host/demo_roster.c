@@ -48,6 +48,18 @@ static const char *const GAME_NAMES[] = {
     "TAZZ", "JEFF HARDY", "MATT HARDY", "ROAD DOGG", "MR. ASS", "TEST", "MANKIND",
 };
 
+/* No Mercy's own wrestler number for each roster id (1-based index into the
+ * game's wrestler table at 0x800471C4; also used by the champions table). */
+static const uint8_t GAME_INDEX[] = {
+    1, 10, 19, 4, 47, 26, 29, 30, 36, 35, 24, 11,
+    2, 3, 18, 14, 17, 20, 32, 31, 13, 12, 21, 6,
+};
+
+uint8_t demo_game_index(uint8_t id)
+{
+    return id < sizeof GAME_INDEX ? GAME_INDEX[id] : 0;
+}
+
 const char *demo_game_name(uint8_t id)
 {
     return id < sizeof GAME_NAMES / sizeof GAME_NAMES[0] ? GAME_NAMES[id] : "";

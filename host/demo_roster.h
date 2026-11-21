@@ -3,4 +3,5 @@
 #include "../engine/universe.h"
 void demo_universe(Universe *u, uint32_t seed);
 const char *demo_game_name(uint8_t id);
+uint8_t demo_game_index(uint8_t id);   /* No Mercy wrestler number, 0 = none */
 #endif

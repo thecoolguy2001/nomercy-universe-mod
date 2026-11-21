@@ -251,3 +251,23 @@ used). Goal: write the match setup directly instead of driving menus.
   find what the match loader reads (bpr on 0x800AAAC0-0x800AAAFF).
 - Debugger: NMDBG_EA=1 decodes the load/store at each memory-breakpoint
   hit and logs unique (pc, effective address) pairs as [ea] lines.
+- SOLVED (director v2, no grid search):
+  - Setup slots 0x800AAAD0 + 12*i: +0 u16 wrestler id (0xFFxx = not
+    picked; Superstar Select empties both on entry). Ids come from the
+    game's table: n = 1..64 (internal order, Rock 1 ... Jim Ross 64),
+    id = *(u16*)*(u32*)(0x800471C4 + 16*n), e.g. Rock 0x0001, HHH 0x0101,
+    Jericho 0x0301, Angle 0x0302, Rikishi 0x0401, Bubba 0x0504.
+  - Participant list 0x800A5568 + 4*i (u32 id) must be written too, else
+    side 2 keeps the grid pick.
+  - PLAYER tab choice: 0x8015971C / 0x80159655 / 0x80159FB5 (1 1P vs CPU,
+    2 CPU vs 1P, 3 Watch). The tab's default is Watch, so the old fixed
+    D-down presses turned Watch into 1P vs CPU. Writing these bytes
+    before A on the PLAYER tab gives the right Superstar Select labels.
+  - Title: s32 0x800AB5B4 = belt (-1 none): 0 World Heavyweight, 1 Tag,
+    2 Intercontinental, 3 European, 4 Hardcore, 5 Light Heavyweight,
+    6 Women's. The intro caption (code at 0x80117244) then reads e.g.
+    "World Heavyweight Championship" with the WWF logo. Champions table
+    0x800A53E0 + 0x34*belt, +2 = champion's wrestler number (empty on a
+    fresh save, which is why the BELT tab is greyed out). The director
+    restores it after the match.
+  - Match flags u32 0x800AAAB4 select the normal caption (0x8011726C).
