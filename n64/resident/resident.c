@@ -78,9 +78,11 @@ static void tick(void)
  * confirmed straight away, and the game's own match setup is then written
  * directly: wrestlers, human/CPU control and the title belt on the line.
  * The result is read at the bell. */
-enum { D_IDLE, D_ROUTE, D_SELECT, D_INTRO, D_MATCH, D_RETURN, D_DONE, D_FAIL };
+enum { D_IDLE, D_ROUTE, D_SELECT, D_INTRO, D_MATCH, D_RETURN, D_STEER, D_DONE, D_FAIL };
 static uint32_t footer_frame;          /* last frame a menu footer was drawn (menus on screen) */
 static void enter_universe(void);
+static uint8_t universe_mode;
+static int universe_highlighted(void);
 
 #define UNIVERSE_ITEM_MODE  0x8040903Fu  /* byte 19 of the 3rd Single Play item */
 #define MODE_SURVIVAL       0x03
@@ -101,6 +103,9 @@ static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
 #define SETUP_LIST(i)     (0x800A5568u + 4u * (i))   /* u32 wrestler id per participant */
 #define SETUP_BELT        0x800AB5B4u    /* s32 belt on the line, -1 = none */
 #define CHAMPION(b)       (0x800A53E2u + 0x34u * (b)) /* wrestler number of the champion */
+#define GAME_SCREEN       0x80045845u    /* screen to show: 2 Multi Play, 3 Single Play, 0x1D result, 0x2A match */
+#define SCREEN_MULTI_PLAY   2
+#define SCREEN_SINGLE_PLAY  3
 #define WRESTLER_TABLE    0x800471C4u    /* [n] (16 bytes): pointer to the record, +0 u16 id */
 
 typedef struct { uint16_t at; uint16_t buttons; } RouteStep;
@@ -212,9 +217,7 @@ static void director_tick(void)
         press(B_A);
         dnext = frames + 45;
         break;
-    case D_INTRO:           /* Watch: skip the entrances; Play: hands off */
-        if (dwatch && t >= 300 && t <= 2700 && t % 300 < 1) press(B_A);
-        /* fall through */
+    case D_INTRO:           /* entrances, match, replays: all hands off */
     case D_MATCH: {
         uint8_t r1 = RAM8(RESULT_SIDE1), r2 = RAM8(RESULT_SIDE2);
         if (r1 == 0 && r2 == 0) seen_zero = 1;
@@ -230,24 +233,38 @@ static void director_tick(void)
         break;
     }
     case D_RETURN:
-        /* After the bell: START skips the replays; once a menu is on screen,
-         * steer the main-menu wheel to Single Play > Universe and reopen it. */
-        if (frames < dnext) break;
-        if (t > 9000) { dstate = D_FAIL; break; }
-        if (frames - footer_frame > 10) {           /* still in the match / replay */
-            press(B_START);
-            dnext = frames + 240;
-            break;
+        /* Hands off: the player watches the replays and picks Exit (or
+         * Rematch) on the result screen. Exit asks for the Multi Play page
+         * of the main menu; it is changed to Single Play, where Universe
+         * is, and the Universe screen is shown as soon as the menu is up. */
+        if (RAM8(GAME_SCREEN) == SCREEN_MULTI_PLAY) RAM8(GAME_SCREEN) = SCREEN_SINGLE_PLAY;
+        if (frames - dt0 > 60 && frames - footer_frame < 10) {
+            universe_mode = 1;
+            us_cover(1);
+            dstate = D_STEER;
+            dt0 = frames;
+            dnext = frames + 2;
         }
+        break;
+    case D_STEER:
+        /* Under the full-screen Universe panel, turn the main-menu wheel
+         * from Multi Play to Single Play and put the cursor on Universe. */
+        if (frames < dnext) break;
+        if (frames - dt0 > 900) { us_cover(0); dstate = D_FAIL; break; }
         {
             uint32_t page = RAM32(SP_RECORD + 0x18);
             uint16_t cur = *(volatile uint16_t *)(SP_RECORD + 0x0C);
+            if (universe_highlighted()) {
+                us_cover(0);
+                dstate = D_DONE;
+                enter_universe();
+                break;
+            }
             if (page == 0x10) press(B_R);            /* Multi Play -> Single Play */
             else if (page == 0x01) press(B_L);       /* Commissioner -> Single Play */
             else if (page == 0x00 && cur != 2) press(B_DDOWN);
-            else if (page == 0x00) { dstate = D_DONE; enter_universe(); break; }
-            else press(B_B);                         /* some other screen: back out */
-            dnext = frames + 90;
+            else { dnext = frames + 2; break; }      /* wheel still turning */
+            dnext = frames + 12;
         }
         break;
     default:
@@ -264,7 +281,7 @@ typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
 
 #define B_DUP    0x0800
 
-static uint8_t universe_mode;      /* 1 while the player is inside Universe */
+/* universe_mode: 1 while the player is inside Universe (declared above) */
 static uint8_t swallow;            /* block game input until buttons are released */
 static uint16_t prev_buttons;
 static uint8_t test_hold;
@@ -349,8 +366,7 @@ static void universe_frame(OSContPad *pads)
     director_tick();
     mb->state = dstate;
     mb->step = (uint8_t)(dsteps | dpicked << 6);
-    if (dstate != D_IDLE && dstate != D_DONE && dstate != D_FAIL &&
-        !((dstate == D_INTRO || dstate == D_MATCH) && !dwatch))
+    if (dstate == D_ROUTE || dstate == D_SELECT || dstate == D_STEER)
         pads[0].button = 0;                /* menus: only the director presses buttons */
     if (frames < hold_until) pads[0].button |= hold_buttons;
 }

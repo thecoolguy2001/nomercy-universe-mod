@@ -217,12 +217,20 @@ void us_match_result(int winner_side, int loser_code)
     pending = U_NONE;
 }
 
+static uint8_t cover;      /* full-screen while the menu is steered back underneath */
+void us_cover(int on) { cover = (uint8_t)on; }
+
 void us_draw(void *holder)
 {
     static char line[12][LINE_LEN];
     Str s;
     int i, y;
 
+    if (cover) {
+        panel(holder, 0, 0, 480, 240);
+        text(holder, "UNIVERSE", 110);
+        return;
+    }
     panel(holder, 250, 8, 476, 228);
     text(holder, "UNIVERSE", 22);
     s_init(&s, line[0], LINE_LEN);

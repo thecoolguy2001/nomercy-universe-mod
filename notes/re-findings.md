@@ -271,3 +271,13 @@ used). Goal: write the match setup directly instead of driving menus.
     fresh save, which is why the BELT tab is greyed out). The director
     restores it after the match.
   - Match flags u32 0x800AAAB4 select the normal caption (0x8011726C).
+- Post-match (2026-11-21): after the bell the game shows replays (until
+  START), then the result screen (Exit / Rematch). Exit loads the main
+  menu on the Multi Play page. u8 0x80045845 is the screen id
+  (0x2A match, 0x1D result screen, 2 Multi Play page, 3 Single Play page);
+  changing 2 -> 3 as soon as Exit sets it makes the menu open on Single
+  Play, with the cursor still on Universe. 0x80159C14/18 are the menu
+  slide-in animation (0x88/0x10 while sliding), not a page number.
+  Director: entrances, replays and the result screen are left to the
+  player; D_RETURN swaps the screen id and opens Universe once the menu is
+  up (D_STEER, under a full-screen cover, is only a fallback).
