@@ -260,6 +260,21 @@ static void actual_wrestlers(uint8_t n[2])
     for (s = 0; s < 2; s++) n[s] = game_number(*(volatile uint16_t *)SETUP_SLOT(s));
 }
 
+/* Backing out of Superstar Select (B) would go to Exhibition's MATCH tab:
+ * the transition's target screen is changed to the Single Play page instead,
+ * and Universe reopens under the cover. */
+static int backed_out(void)
+{
+    if (RAM16(NEXT_SCREEN) != SCREEN_EX_MATCH) return 0;
+    RAM16(NEXT_SCREEN) = SCREEN_SINGLE_PLAY;
+    us_cover(1);
+    director_end_match();
+    seen_result = 0;
+    dstate = D_RETURN;
+    dt0 = frames;
+    return 1;
+}
+
 static void director_tick(void)
 {
     uint32_t t = frames - dt0;
@@ -289,20 +304,13 @@ static void director_tick(void)
         break;
     case D_SELECT:
         /* The player picks (the cursor starts on the card's wrestlers) and
-         * starts the match. Backing out (B) would go to Exhibition's MATCH
-         * tab: the transition's target screen is changed to the Single Play
-         * page instead, and Universe reopens under the cover. */
+         * starts the match from the loading screen (B there goes back to
+         * Superstar Select, so it still counts as picking). */
         set_player_mode();
         set_arena();
         write_belt();
-        if (RAM16(NEXT_SCREEN) == SCREEN_EX_MATCH) {
-            RAM16(NEXT_SCREEN) = SCREEN_SINGLE_PLAY;
-            us_cover(1);
-            director_end_match();
-            seen_result = 0;
-            dstate = D_RETURN;
-            dt0 = frames;
-        } else if (screen == SCREEN_LOADING || screen == SCREEN_MATCH) {
+        if (backed_out()) break;
+        if (screen == SCREEN_MATCH) {
             dt0 = frames;
             dstate = D_INTRO;
         } else if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY) {
@@ -313,7 +321,10 @@ static void director_tick(void)
         break;
     case D_INTRO:           /* entrances, match, replays: all hands off */
     case D_MATCH: {
-        uint8_t r1 = RAM8(RESULT_SIDE1), r2 = RAM8(RESULT_SIDE2);
+        uint8_t r1, r2;
+        if (backed_out()) break;
+        r1 = RAM8(RESULT_SIDE1);
+        r2 = RAM8(RESULT_SIDE2);
         if (r1 == 0 && r2 == 0) seen_zero = 1;
         if (seen_zero && (r1 == 4 || r2 == 4)) {
             uint8_t n[2];
@@ -417,7 +428,9 @@ static void enter_universe(void)
 
 static int universe_highlighted(void)
 {
-    return RAM32(SP_RECORD + 0x08) == SP_TABLE_ENTRY &&
+    /* the record keeps stale values on other screens: check the screen too */
+    return RAM8(GAME_SCREEN) == SCREEN_SINGLE_PLAY &&
+           RAM32(SP_RECORD + 0x08) == SP_TABLE_ENTRY &&
            RAM32(SP_RECORD + 0x18) == PAGE_SINGLE &&
            *(volatile uint16_t *)(SP_RECORD + 0x0C) == 2;
 }
@@ -448,12 +461,19 @@ static void universe_frame(OSContPad *pads)
         if (test_hold) {
             test_hold--;
             pads[0].button |= B_A;
-        } else if (dstate != D_IDLE && dstate != D_DONE && dstate != D_FAIL) {
+        } else if (dstate == D_ROUTE || dstate == D_STEER) {
             /* the director is driving */
         } else if (!universe_mode) {
             if (swallow) {
                 if (btn) pads[0].button = 0; else swallow = 0;
             } else if (universe_highlighted() && (pressed & B_A)) {
+                /* A on Universe always opens it (the item underneath is
+                 * Survival); a director that lost track of the match ends */
+                if (dstate != D_IDLE && dstate != D_DONE && dstate != D_FAIL) {
+                    director_end_match();
+                    us_cover(0);
+                    dstate = D_IDLE;
+                }
                 enter_universe();           /* the game never sees this A */
                 pads[0].button = 0;
             }
