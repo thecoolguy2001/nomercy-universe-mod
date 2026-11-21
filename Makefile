@@ -55,7 +55,14 @@ build/n64/%.o: host/%.c $(HEADERS)
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
-build/n64/res_entry.o: n64/resident/entry.S
+build/n64/universe_label.tex: tools/make_label.py tools/nm_assets.py $(ROM_IN)
+	@mkdir -p build/n64
+	python3 -I tools/make_label.py $(ROM_IN) "Universe Mode" $@
+
+build/n64/universe_label.bin build/n64/universe_label.h: build/n64/universe_label.tex tools/pack_label.py
+	python3 -I tools/pack_label.py $< build/n64/universe_label.bin build/n64/universe_label.h 0x1FA8000
+
+build/n64/res_entry.o: n64/resident/entry.S build/n64/universe_label.h
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
@@ -89,8 +96,8 @@ build/n64/stub.bin: n64/stub.S build/n64/payload.bin
 	    -c -o build/n64/stub.o $<
 	llvm-objcopy -O binary -j .text build/n64/stub.o $@
 
-$(ROM_OUT): $(ROM_IN) build/n64/stub.bin build/n64/payload.bin tools/build_rom.py
-	python3 -I tools/build_rom.py patch $(ROM_IN) build/n64/stub.bin build/n64/payload.bin $@
+$(ROM_OUT): $(ROM_IN) build/n64/stub.bin build/n64/payload.bin build/n64/universe_label.bin tools/build_rom.py
+	python3 -I tools/build_rom.py patch $(ROM_IN) build/n64/stub.bin build/n64/payload.bin $@ build/n64/universe_label.bin
 
 install: $(ROM_OUT)
 	mkdir -p $(INSTALL_DIR)

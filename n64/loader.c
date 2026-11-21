@@ -14,6 +14,10 @@ void boot_ui_main(void);
 #define HOOK_ADDR       0x800346A8u
 #define ORIG_INSN_0     0x27BDFFF0u  /* addiu sp, sp, -0x10 */
 #define ORIG_INSN_1     0x00804821u  /* move  t1, a0 */
+/* Asset lookup in RAM; the ROM has "j 0x80410008; nop" here. */
+#define ASSET_HOOK_ADDR 0x80003BD0u
+#define ASSET_ORIG_0    0x30A2FFFFu  /* andi  v0, a1, 0xffff */
+#define ASSET_ORIG_1    0x2C430001u  /* sltiu v1, v0, 1 */
 
 static void install_resident(void)
 {
@@ -34,8 +38,10 @@ static const uint8_t SP_ITEMS[3][22] = {
     {0xFF,0xB0,0xFF,0xDD,0x04,0x00, 2,1,0,0, 0x85,0x09, 0xF6,0x97, 0x05,0x00, 0xFF,0xFF,0x04,0x0C,0x08,0x00},
     /* Survival: up -> Championship, down -> Universe */
     {0xFF,0xB0,0xFF,0xEE,0x04,0x00, 0,2,1,1, 0x85,0x0A, 0xF6,0x98, 0x06,0x00, 0xFF,0xFF,0x04,0x03,0x08,0x00},
-    /* Universe Mode (TEST: Championship label, opens Survival for now) */
-    {0xFF,0xB0,0xFF,0xFF,0x04,0x00, 1,0,2,2, 0x85,0x09, 0xF6,0x98, 0x06,0x00, 0xFF,0xFF,0x04,0x03,0x08,0x00},
+    /* Universe Mode: label id 0x850E ("Records", unused by any menu) is
+     * redirected to the Universe Mode label by the resident asset hook.
+     * Still opens Survival for now. */
+    {0xFF,0xB0,0xFF,0xFF,0x04,0x00, 1,0,2,2, 0x85,0x0E, 0xF6,0x98, 0x06,0x00, 0xFF,0xFF,0x04,0x03,0x08,0x00},
 };
 
 static void install_menu(void)
@@ -48,8 +54,11 @@ static void install_menu(void)
 static void remove_hook(void)
 {
     volatile uint32_t *hook = (volatile uint32_t *)(0xA0000000u | (HOOK_ADDR & 0x1FFFFFFFu));
+    volatile uint32_t *ahook = (volatile uint32_t *)(0xA0000000u | (ASSET_HOOK_ADDR & 0x1FFFFFFFu));
     hook[0] = ORIG_INSN_0;
     hook[1] = ORIG_INSN_1;
+    ahook[0] = ASSET_ORIG_0;
+    ahook[1] = ASSET_ORIG_1;
 }
 
 void n64_main(void)

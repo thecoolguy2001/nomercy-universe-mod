@@ -120,3 +120,23 @@ Requires the Expansion Pak.
 Resident hook accepts CMD_WATCH via mailbox (0x80408014: cmd, p1, p2),
 drives Exhibition menus from the MATCH tab, picks wrestlers, reaches the
 match (verified: Undertaker picked, match started, state=IN_MATCH).
+
+## Assets and the Universe Mode label — WORKING
+- Asset table: ROM 0x16C3238, 19459 u32 entries, copied to RAM (pointer at
+  0x80062CB0); unpacked sizes table pointer at 0x80062CB4.
+  Entry & ~1 = offset from archive base ROM 0x1BD1B0; bit 0 = compressed.
+- Compressed asset = u32 unpacked size + LZSS (4 KB ring zero-filled,
+  start 4078, flag byte LSB-first, 1 = literal, ref = 12-bit pos + len-3).
+  tools/nm_assets.py decodes/encodes; verified byte-exact on menu labels.
+- Asset lookup 0x80003BD0 (a0 = record, a1 = 1-based id) fills
+  {ROM start, ROM end = next entry, unpacked size, packed length}; the
+  length comes from the NEXT entry, so assets can't just be moved.
+- Menu labels are TEX assets (CI4 grey ramp, 128x32 / 96x32). Label ids:
+  0x8501-07 Multi Play items, 0x8508 Single Play title, 0x8509
+  Championship, 0x850A Survival, 0x850B Commissioner, 0x850C/D Smackdown
+  Mall/Options, 0x850E Records (asset 0x4491, unused by any menu),
+  0x8510 World Heavyweight, ...
+- Universe Mode label: tools/make_label.py cuts the game's own letters
+  (Survival, Ladder Match, Options; capital U from lowercase u), packed
+  at ROM 0x1FA8000. ROM patches 0x80003BD0 -> j 0x80410008; resident hook
+  serves asset 0x4491 from there. Third Single Play item uses id 0x850E.

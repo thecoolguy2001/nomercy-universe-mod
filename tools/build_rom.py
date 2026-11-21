@@ -21,6 +21,12 @@ ROM_SIZE = 0x2000000
 HOOK_ROM = 0x1000 + 0x342A8
 HOOK_ORIG = bytes.fromhex("27bdfff0" "00804821")   # addiu sp,sp,-0x10 ; move t1,a0
 HOOK_NEW = bytes.fromhex("08104000" "00000000")    # j 0x80410000 ; nop
+# Asset lookup (RAM 0x80003BD0) -> resident asset hook
+ASSET_HOOK_ROM = 0x1000 + 0x37D0
+ASSET_HOOK_ORIG = bytes.fromhex("30a2ffff" "2c430001")
+ASSET_HOOK_NEW = bytes.fromhex("08104002" "00000000")    # j 0x80410008 ; nop
+# New label asset (packed) goes in the unused ROM padding before the payload
+LABEL_ROM = 0x1FA8000
 # Single Play entry of the main-menu table (overlay stored uncompressed;
 # RAM 0x8014F4E0): (0x8014D47C, 2 items) -> (0x80409000, 3 items)
 SP_TABLE_ROM = 0xF5C80
@@ -61,7 +67,7 @@ def extract_entry(rom_path, out_path):
     open(out_path, "wb").write(rom[ENTRY_ROM:ENTRY_ROM + ENTRY_LEN])
 
 
-def patch(rom_path, stub_path, payload_path, out_path):
+def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
     rom = load_rom(rom_path)
     stub = open(stub_path, "rb").read()
     payload = open(payload_path, "rb").read()
@@ -81,9 +87,19 @@ def patch(rom_path, stub_path, payload_path, out_path):
         sys.exit("osContGetReadData does not match the expected instructions")
     rom[HOOK_ROM:HOOK_ROM + 8] = HOOK_NEW
 
+    if rom[ASSET_HOOK_ROM:ASSET_HOOK_ROM + 8] != ASSET_HOOK_ORIG:
+        sys.exit("asset lookup does not match the expected instructions")
+    rom[ASSET_HOOK_ROM:ASSET_HOOK_ROM + 8] = ASSET_HOOK_NEW
+
     if rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] != SP_TABLE_ORIG:
         sys.exit("Single Play menu table entry does not match")
     rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] = SP_TABLE_NEW
+
+    if label_path:
+        label = open(label_path, "rb").read()
+        if LABEL_ROM < PADDING_START or LABEL_ROM + len(label) > PAYLOAD_ROM:
+            sys.exit("label asset does not fit in the free ROM space")
+        rom[LABEL_ROM:LABEL_ROM + len(label)] = label
 
     padded = payload + b"\xFF" * (-len(payload) % 8)
     rom[PAYLOAD_ROM:PAYLOAD_ROM + len(padded)] = padded
@@ -101,7 +117,7 @@ def patch(rom_path, stub_path, payload_path, out_path):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "extract-entry":
         extract_entry(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) == 6 and sys.argv[1] == "patch":
+    elif len(sys.argv) in (6, 7) and sys.argv[1] == "patch":
         patch(*sys.argv[2:])
     else:
         sys.exit(__doc__)
