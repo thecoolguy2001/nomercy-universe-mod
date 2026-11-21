@@ -318,3 +318,20 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   03 lands on the Single Play page; the director then reopens Universe
   under the cover. Exit after a match is covered the same way (cover on
   from the 2 -> 3 swap until Universe is open).
+
+## Arenas (2026-11-21)
+- ARENA tab cursor 0x80159E7D; copies 0x80159656, 0x8015971E and the
+  match loader's 0x800AA99F (written by the director). Arenas: 0 Raw is
+  War, 1 No Mercy, 2 SmackDown!, 3 King of the Ring, 4 SummerSlam,
+  5 Survivor Series, 6 Royal Rumble, 7 WrestleMania, 8 Backlash,
+  9 Armageddon (8/9 not listed on the tab but load fine when written).
+- Preview pictures: table 0x80149558 = 6 asset ids (1-based) per arena
+  (Raw 0x4641.., No Mercy 0x4665.., SmackDown 0x463B.., ...); each a 64x32
+  CI8 TEX with its own 256-colour palette. Drawn by 0x80125B98: tile
+  rectangles at 0x8014C268 (16 bytes: x0,y0,s0,t0,x1,y1,s1,t1), tiles 0-2
+  = left column top to bottom, 3-5 = right column, each 64x32 stretched to
+  72x36 (144x108 picture).
+- The mod stores all 60 tiles (tools/make_arenas.py) at ROM 0x1FD0000; the
+  boot loader DMAs them to 0x80480000; the cover draws the show's arena.
+- Display list buffers 0x80389880 / 0x8038C7F0 (0x2F70 bytes each); menus
+  use < 2 KB.

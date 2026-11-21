@@ -45,6 +45,9 @@ TEXT_HOOK_ORIG = bytes.fromhex("0c037708")                # jal 0x800DDC20
 TEXT_HOOK_NEW = bytes.fromhex("0c104006")                 # jal 0x80410018
 # New label asset (packed) goes in the unused ROM padding before the payload
 LABEL_ROM = 0x1FA8000
+# Arena pictures (tools/make_arenas.py) after the payload; the boot loader
+# copies them to RAM 0x80480000
+ARENAS_ROM = 0x1FD0000
 # Single Play entry of the main-menu table (overlay stored uncompressed;
 # RAM 0x8014F4E0): (0x8014D47C, 2 items) -> (0x80409000, 3 items)
 SP_TABLE_ROM = 0xF5C80
@@ -85,15 +88,15 @@ def extract_entry(rom_path, out_path):
     open(out_path, "wb").write(rom[ENTRY_ROM:ENTRY_ROM + ENTRY_LEN])
 
 
-def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
+def patch(rom_path, stub_path, payload_path, out_path, label_path=None, arenas_path=None):
     rom = load_rom(rom_path)
     stub = open(stub_path, "rb").read()
     payload = open(payload_path, "rb").read()
 
     if len(stub) > ENTRY_LEN:
         sys.exit(f"stub is {len(stub)} bytes, max {ENTRY_LEN}")
-    if PAYLOAD_ROM + len(payload) > ROM_SIZE:
-        sys.exit(f"payload is {len(payload)} bytes, max {ROM_SIZE - PAYLOAD_ROM}")
+    if PAYLOAD_ROM + len(payload) > ARENAS_ROM:
+        sys.exit(f"payload is {len(payload)} bytes, max {ARENAS_ROM - PAYLOAD_ROM}")
     if any(b != 0xFF for b in rom[PADDING_START:ROM_SIZE]):
         sys.exit("ROM padding region is not empty")
 
@@ -135,6 +138,12 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
             sys.exit("label asset does not fit in the free ROM space")
         rom[LABEL_ROM:LABEL_ROM + len(label)] = label
 
+    if arenas_path:
+        arenas = open(arenas_path, "rb").read()
+        if ARENAS_ROM + len(arenas) > ROM_SIZE or len(arenas) != 10 * 6 * 2560:
+            sys.exit("arena pictures do not fit / have the wrong size")
+        rom[ARENAS_ROM:ARENAS_ROM + len(arenas)] = arenas
+
     padded = payload + b"\xFF" * (-len(payload) % 8)
     rom[PAYLOAD_ROM:PAYLOAD_ROM + len(padded)] = padded
     rom[ENTRY_ROM:ENTRY_ROM + ENTRY_LEN] = stub + b"\x00" * (ENTRY_LEN - len(stub))
@@ -151,7 +160,7 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "extract-entry":
         extract_entry(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) in (6, 7) and sys.argv[1] == "patch":
+    elif len(sys.argv) in (6, 7, 8) and sys.argv[1] == "patch":
         patch(*sys.argv[2:])
     else:
         sys.exit(__doc__)

@@ -99,6 +99,9 @@ static int universe_highlighted(void);
 static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
 #define PLAYER_1P_VS_CPU  1               /* PLAYER tab: 1 1P vs CPU, 2 CPU vs 1P, 3 Watch */
 #define PLAYER_WATCH      3
+/* ARENA tab choice (0 Raw is War .. 9 Armageddon, see us_show_arena): the
+ * tab's own bytes and the copy the match loader uses */
+static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x800AA99Fu };
 /* Match setup read by the match loader */
 #define SETUP_SLOT(i)     (0x800AAAD0u + 12u * (i))  /* +0 wrestler id (u16, 0xFFxx = not picked) */
 #define SLOT_HUMAN        1              /* slot +3 before Superstar Select: controller */
@@ -122,7 +125,7 @@ static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
 #define SS_SUPERSTAR_PAGES 5
 
 static uint8_t dstate, dwatch, seen_zero, seen_result, dresults;
-static uint8_t dwrestler[2], dchampion, dsaved_champion;
+static uint8_t dwrestler[2], dchampion, dsaved_champion, darena;
 static int     dbelt;
 static uint32_t dt0, dnext;
 static uint32_t hold_until;
@@ -205,6 +208,13 @@ static void set_player_mode(void)
         RAM8(EX_PLAYER[i]) = dwatch ? PLAYER_WATCH : PLAYER_1P_VS_CPU;
 }
 
+/* The show's arena */
+static void set_arena(void)
+{
+    unsigned i;
+    for (i = 0; i < sizeof EX_ARENA / sizeof EX_ARENA[0]; i++) RAM8(EX_ARENA[i]) = darena;
+}
+
 /* Who controls each side, as the PLAYER tab leaves it for Superstar Select
  * (only valid before the picks: the byte means something else afterwards) */
 static void set_controllers(void)
@@ -225,6 +235,7 @@ static void director_start(int watch)
     us_pending_setup(dwrestler, &dbelt, &dchampion);
     if (dbelt >= 0) dsaved_champion = RAM8(CHAMPION(dbelt));
     dwatch = (uint8_t)watch;
+    darena = (uint8_t)us_show_arena();
     seen_zero = 0;
     preset_cursor(dwrestler[0]);
     RAM8(UNIVERSE_ITEM_MODE) = MODE_EXHIBITION;
@@ -261,6 +272,7 @@ static void director_tick(void)
             RAM8(EX_MATCH_CURSOR) = 0;                 /* Single Match */
             set_player_mode();                         /* Watch or 1P vs CPU */
             set_controllers();
+            set_arena();
             if (frames >= dnext) { press(B_START); dnext = frames + 20; }
         } else {
             dnext = frames + 6;                        /* let the tab settle first */
@@ -281,6 +293,7 @@ static void director_tick(void)
          * tab: the transition's target screen is changed to the Single Play
          * page instead, and Universe reopens under the cover. */
         set_player_mode();
+        set_arena();
         write_belt();
         if (RAM16(NEXT_SCREEN) == SCREEN_EX_MATCH) {
             RAM16(NEXT_SCREEN) = SCREEN_SINGLE_PLAY;

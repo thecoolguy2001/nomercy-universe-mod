@@ -75,6 +75,10 @@ build/n64/res_libc.o: n64/libc.c
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
+build/n64/arenas.bin: tools/make_arenas.py tools/nm_assets.py $(ROM_IN)
+	@mkdir -p build/n64
+	python3 -I tools/make_arenas.py $(ROM_IN) $@
+
 build/n64/resident.elf: $(RES_OBJS) n64/resident/link.ld
 	ld.lld -T n64/resident/link.ld -o $@ $(RES_OBJS)
 
@@ -97,8 +101,8 @@ build/n64/stub.bin: n64/stub.S build/n64/payload.bin
 	    -c -o build/n64/stub.o $<
 	llvm-objcopy -O binary -j .text build/n64/stub.o $@
 
-$(ROM_OUT): $(ROM_IN) build/n64/stub.bin build/n64/payload.bin build/n64/universe_label.bin tools/build_rom.py
-	python3 -I tools/build_rom.py patch $(ROM_IN) build/n64/stub.bin build/n64/payload.bin $@ build/n64/universe_label.bin
+$(ROM_OUT): $(ROM_IN) build/n64/stub.bin build/n64/payload.bin build/n64/universe_label.bin build/n64/arenas.bin tools/build_rom.py
+	python3 -I tools/build_rom.py patch $(ROM_IN) build/n64/stub.bin build/n64/payload.bin $@ build/n64/universe_label.bin build/n64/arenas.bin
 
 install: $(ROM_OUT)
 	mkdir -p $(INSTALL_DIR)

@@ -242,14 +242,82 @@ void us_match_closed(void) { pending = U_NONE; }
 static uint8_t cover;      /* full-screen while the menu is steered back underneath */
 void us_cover(int on) { cover = (uint8_t)on; }
 
+/* ---- arenas ----
+ * The game's arenas (ARENA tab order; 8 and 9 are locked there but load
+ * fine): 0 Raw is War, 1 No Mercy, 2 SmackDown!, 3 King of the Ring,
+ * 4 SummerSlam, 5 Survivor Series, 6 Royal Rumble, 7 WrestleMania,
+ * 8 Backlash, 9 Armageddon. PPVs without an arena of their own use No Mercy's. */
+static const uint8_t PPV_ARENA[12] = {
+    6, 1, 7, 8,     /* Royal Rumble, No Way Out, WrestleMania, Backlash */
+    1, 3, 1, 4,     /* Judgment Day, King of the Ring, Fully Loaded, SummerSlam */
+    1, 1, 5, 9,     /* Unforgiven, No Mercy, Survivor Series, Armageddon */
+};
+
+int us_show_arena(void)
+{
+    if (!started) return 0;
+    if (U.slot == U_BRAND_RAW) return 0;
+    if (U.slot == U_BRAND_SMACKDOWN) return 2;
+    return PPV_ARENA[(U.week / U_PPV_EVERY + 11) % 12];
+}
+
+/* Arena preview pictures (tools/make_arenas.py), in asset order, and the
+ * picture of each arena */
+#define arena_tiles (*(const uint8_t (*)[10][6][512 + 2048])0x80480000u)  /* boot loader copies them here */
+static const uint8_t ARENA_PICTURE[10] = { 2, 8, 1, 9, 0, 4, 6, 3, 5, 7 };
+
+/* The arena's picture over the whole 480x240 frame. Laid out as the ARENA
+ * tab does it (menu overlay 0x80125B98, tile rectangles at 0x8014C268):
+ * six 64x32 CI8 tiles in two columns of three, tiles 0-2 down the left
+ * column, 3-5 down the right one; here each is a 240x80 rectangle. */
+static void arena_picture(void *holder, int arena)
+{
+    uint32_t **dl = (uint32_t **)holder;
+    uint32_t *g = *dl;
+    int t;
+    g[0] = 0xE7000000u; g[1] = 0;                         /* pipe sync */
+    g[2] = 0xEF008CEFu; g[3] = 0x0F0A4000u;               /* 1 cycle, TLUT RGBA16, point, opaque */
+    g[4] = 0xFCFFFFFFu; g[5] = 0xFFFCFC7Eu;               /* colour = texel, alpha = 1 */
+    g += 6;
+    for (t = 0; t < 6; t++) {
+        const uint8_t *tile = arena_tiles[ARENA_PICTURE[arena]][t];
+        uint32_t pal = (uint32_t)tile & 0x00FFFFFFu, px = pal + 512;
+        uint32_t x0 = (uint32_t)(t / 3) * 240, y0 = (uint32_t)(t % 3) * 80;
+        g[0]  = 0xFD100000u; g[1]  = pal;                 /* palette: RGBA16 image */
+        g[2]  = 0xE8000000u; g[3]  = 0;                   /* tile sync */
+        g[4]  = 0xF5000100u; g[5]  = 0x07000000u;         /* tile 7 at TMEM 0x800 */
+        g[6]  = 0xE6000000u; g[7]  = 0;                   /* load sync */
+        g[8]  = 0xF0000000u; g[9]  = 0x073FC000u;         /* load 256 colours */
+        g[10] = 0xE7000000u; g[11] = 0;
+        g[12] = 0xFD500000u; g[13] = px;                  /* pixels, loaded as 16-bit */
+        g[14] = 0xE8000000u; g[15] = 0;
+        g[16] = 0xF5500000u; g[17] = 0x07000000u;
+        g[18] = 0xE6000000u; g[19] = 0;
+        g[20] = 0xF3000000u; g[21] = 0x073FF100u;         /* 1024 words, dxt 256 */
+        g[22] = 0xE8000000u; g[23] = 0;
+        g[24] = 0xF5481000u; g[25] = 0x00080200u;         /* tile 0: CI8 64 wide, clamp */
+        g[26] = 0xF2000000u; g[27] = 0x000FC07Cu;         /* 64x32 */
+        g[28] = 0xE4000000u | ((x0 + 240) << 14) | ((y0 + 80) << 2);
+        g[29] = (x0 << 14) | (y0 << 2);                   /* texture rectangle, tile 0 */
+        g[30] = 0xE1000000u; g[31] = 0;                   /* s, t = 0 */
+        g[32] = 0xF1000000u; g[33] = (273u << 16) | 410u; /* 1/3.75, 1/2.5 (s5.10) */
+        g += 34;
+    }
+    g[0] = 0xE7000000u; g[1] = 0;
+    g[2] = 0xEF08ACEFu; g[3] = 0x00504240u;               /* restore the game's text mode */
+    g[4] = 0xFC5196A3u; g[5] = 0x112CFE7Fu;               /* and its text combine */
+    *dl = g + 6;
+}
+
 /* Called at the end of every frame's display list: while the menus change
  * underneath, the whole screen is covered (on every frame, including the
- * first frames of a new menu, before it draws any text of its own). */
+ * first frames of a new menu, before it draws any text of its own) by the
+ * show's arena with UNIVERSE on it. */
 void us_draw_cover(void *holder)
 {
     if (!cover) return;
-    panel(holder, 0, 0, 480, 240);
-    text(holder, "UNIVERSE", 110);
+    arena_picture(holder, us_show_arena());
+    DRAW_TEXT_C(holder, "UNIVERSE", 240, 110, 0xFF, TEXT_STYLE, TEXT_FLAGS);
 }
 
 void us_draw(void *holder)

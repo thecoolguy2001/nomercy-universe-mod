@@ -31,6 +31,22 @@ void boot_ui_main(void);
 #define DLEND_ORIG_0    0x27BDFFE8u  /* addiu sp, sp, -0x18 */
 #define DLEND_ORIG_1    0x00A04821u  /* move  t1, a1 */
 
+/* Arena pictures (tools/make_arenas.py), stored after the payload in ROM;
+ * copied next to the resident module (where it expects them). */
+#define ARENAS_CART  0x11FD0000u
+#define ARENAS_RAM   0x00480000u          /* = ARENAS_ADDR 0x80480000 */
+#define ARENAS_LEN   (10u * 6u * 2560u)
+#define PI_REG(o)    (*(volatile uint32_t *)(0xA4600000u + (o)))
+
+static void install_arenas(void)
+{
+    PI_REG(0x00) = ARENAS_RAM;            /* PI_DRAM_ADDR */
+    PI_REG(0x04) = ARENAS_CART;           /* PI_CART_ADDR */
+    PI_REG(0x0C) = ARENAS_LEN - 1;        /* PI_WR_LEN: cart -> RDRAM */
+    while (PI_REG(0x10) & 3) {}           /* DMA / IO busy */
+    PI_REG(0x10) = 2;                     /* clear the PI interrupt */
+}
+
 static void install_resident(void)
 {
     volatile uint8_t *dst = (volatile uint8_t *)(0xA0000000u | (RESIDENT_BASE & 0x1FFFFFFFu));
@@ -88,6 +104,7 @@ void n64_main(void)
     {
         install_resident();
         install_menu();
+        install_arenas();
     } else
         remove_hook();           /* no Expansion Pak: play the unmodified game */
 
