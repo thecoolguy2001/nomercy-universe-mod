@@ -323,11 +323,20 @@ static void dbg_ui_update(unsigned int pc)
 {
     if (dbg_started) {
         int64_t *r = dbg_cpu_ptr ? (int64_t *)dbg_cpu_ptr(2 /* M64P_CPU_REG_REG */) : NULL;
+        static uint32_t last_pc, last_a0, last_ra;
+        if (r && getenv("NMDBG_DEDUPE") && pc == last_pc && (uint32_t)r[4] == last_a0 &&
+            (uint32_t)r[31] == last_ra) {
+            dbg_set_runstate(2);
+            dbg_step();
+            return;
+        }
+        if (r) { last_pc = pc; last_a0 = (uint32_t)r[4]; last_ra = (uint32_t)r[31]; }
         bp_hits++;
         if (bp_hits <= bp_limit && r)
-            printf("[bp] frame %u pc=%08X ra=%08X a0=%08X a1=%08X a2=%08X a3=%08X v0=%08X sp=%08X\n",
+            printf("[bp] frame %u pc=%08X ra=%08X a0=%08X a1=%08X a2=%08X a3=%08X v0=%08X sp=%08X arg4=%08X\n",
                    frame, pc, (uint32_t)r[31], (uint32_t)r[4], (uint32_t)r[5], (uint32_t)r[6],
-                   (uint32_t)r[7], (uint32_t)r[2], (uint32_t)r[29]);
+                   (uint32_t)r[7], (uint32_t)r[2], (uint32_t)r[29],
+                   rd32(((uint32_t)r[29] + 0x10) & 0x7FFFFF));
         if (bp_hits == bp_limit) {
             unsigned int i;
             printf("[bp] limit reached, removing breakpoints\n");

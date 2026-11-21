@@ -169,3 +169,24 @@ interpreter; the video plugin replaces ui-console's debugger callbacks.
 Script: `bpx ADDR` (virtual), `bpr/bpw ADDR LEN` (converted to PHYSICAL
 addresses - mupen memory bps match physical), `bplimit N`. Each hit logs
 pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.
+
+## Music — FOUND and WORKING
+- All cartridge reads go through __osEPiRawStartDma 0x8002EC40 (called by
+  the PI manager at 0x8002F350). Sound banks: "N64 PtrTablesV2" +
+  "N64 WaveTables" at ROM 0x16F3300/0x16F6F70, 0x1858090/0x185EE10,
+  0x1967470/0x19698E0; samples are streamed in 512-byte DMAs.
+- play_song(a0 = song, a1 = mode, a2 = volume) at 0x80017CF4 (song < 0x50;
+  current song u16 at 0x800485A4; per-song table at 0x80048178). Screens
+  call it every frame or two with their song; it ignores repeats.
+- Songs seen: 0x00 silence/intro, 0x0B title, 0x0E main menu, 0x10
+  Exhibition, 0x12 Smackdown Mall, 0x29 The Undertaker (entrance),
+  0x41 Chris Jericho (entrance). Menus use mode 4, volume 0x50.
+- Hook: ROM patches 0x80017CF4 -> j 0x80410010; while mailbox
+  music_override (0x80408024) is set, requests for songs 1..0x1F (menu
+  music) are replaced by it; 0, -1 and wrestler themes (>= 0x20) pass.
+  The resident sets it to 0x29 while Universe is highlighted on the
+  Single Play page. Verified: requests 0x0E -> 0x29 -> 0x0E as the cursor
+  moves onto and off Universe.
+- Single Play menu record 0x80159C00: +0x08 table-entry ptr (0x8014F4E0),
+  +0x0C u16 cursor, +0x18 u32 wheel page (0 Single, 1 Commissioner, 0x10
+  Multi), +0x1C pointer.

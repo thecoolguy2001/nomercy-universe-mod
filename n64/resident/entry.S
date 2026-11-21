@@ -1,6 +1,7 @@
 # Resident module entry points, at fixed addresses at the start of the image.
 #   0x80410000  osContGetReadData hook  (ROM: 0x800346A8 -> j 0x80410000)
 #   0x80410008  asset lookup hook       (ROM: 0x80003BD0 -> j 0x80410008)
+#   0x80410010  play_song hook          (ROM: 0x80017CF4 -> j 0x80410010)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -14,6 +15,31 @@ hook_entry:
     .globl asset_lookup_entry
 asset_lookup_entry:
     j       asset_lookup_hook
+    nop
+
+    .globl play_song_entry
+play_song_entry:
+    j       play_song_hook
+    nop
+
+# play_song(a0 = song, a1 = mode, a2 = volume) at 0x80017CF4. While the
+# mailbox flag music_override (0x80408024) holds a song, menu-music
+# requests (songs 1..0x1F) are replaced by it. 0 (silence), -1 (stop) and
+# wrestler themes (>= 0x20) pass through unchanged.
+play_song_hook:
+    lui     $t0, 0x8041
+    lw      $t1, -0x7FDC($t0)      # 0x80408024 music_override
+    beqz    $t1, 2f
+    nop
+    blez    $a0, 2f                # 0 or negative: leave alone
+    nop
+    sltiu   $t2, $a0, 0x20
+    beqz    $t2, 2f                # wrestler themes: leave alone
+    nop
+    move    $a0, $t1
+2:  lui     $v0, 0x8005            # the two instructions the ROM patch replaced
+    lw      $v0, -0x7A78($v0)
+    j       0x80017CFC
     nop
 
 # Asset lookup (No Mercy 0x80003BD0): a0 = record to fill, a1 = 1-based

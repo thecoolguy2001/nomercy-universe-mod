@@ -33,7 +33,13 @@
 #define B_START  0x1000
 #define B_DDOWN  0x0400
 
-#define COUNTS_PER_FRAME 781250u     /* CP0 Count runs at 46.875 MHz; 60 fields/s */
+#define COUNTS_PER_FRAME 781250u
+
+/* Game music: play_song(song, mode, volume) at 0x80017CF4. Menus call it
+ * with mode 4, volume 0x50. Song 0x29 = The Undertaker's theme. */
+typedef void (*play_song_fn)(uint32_t song, uint32_t mode, uint32_t volume);
+#define PLAY_SONG ((play_song_fn)0x80017CF4u)
+#define SONG_UNDERTAKER 0x29     /* CP0 Count runs at 46.875 MHz; 60 fields/s */
 
 static uint32_t cp0_count(void)
 {
@@ -152,6 +158,20 @@ static void check_result(volatile Mailbox *mb)
     mb->state = ST_DONE;
 }
 
+/* Single Play menu record (see notes): +0x08 menu-table entry pointer,
+ * +0x0C u16 cursor, +0x18 u32 wheel page (0x00 Single Play, 0x01 Commissioner,
+ * 0x10 Multi Play). Universe is the third Single Play item (cursor 2). */
+#define SP_RECORD       0x80159C00u
+#define SP_TABLE_ENTRY  0x8014F4E0u
+#define PAGE_SINGLE     0x00
+
+static int universe_highlighted(void)
+{
+    return RAM32(SP_RECORD + 0x08) == SP_TABLE_ENTRY &&
+           RAM32(SP_RECORD + 0x18) == PAGE_SINGLE &&
+           *(volatile uint16_t *)(SP_RECORD + 0x0C) == 2;
+}
+
 static void universe_frame(OSContPad *pads)
 {
     volatile Mailbox *mb = MAILBOX;
@@ -166,6 +186,15 @@ static void universe_frame(OSContPad *pads)
     mb->last_count = now;
     mb->last_buttons = pads[0].button;
     tick();
+
+    /* Universe Mode's music is The Undertaker's theme */
+    mb->music_override = universe_highlighted() ? SONG_UNDERTAKER : 0;
+
+    if (mb->song_request & 0x100) {
+        uint32_t song = mb->song_request & 0xFF;
+        mb->song_request = 0;
+        PLAY_SONG(song, 4, 0x50);
+    }
 
     if ((mb->cmd == CMD_WATCH || mb->cmd == CMD_PLAY) &&
         (mb->state == ST_IDLE || mb->state == ST_DONE))

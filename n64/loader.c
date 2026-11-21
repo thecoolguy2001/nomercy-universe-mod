@@ -18,6 +18,10 @@ void boot_ui_main(void);
 #define ASSET_HOOK_ADDR 0x80003BD0u
 #define ASSET_ORIG_0    0x30A2FFFFu  /* andi  v0, a1, 0xffff */
 #define ASSET_ORIG_1    0x2C430001u  /* sltiu v1, v0, 1 */
+/* play_song in RAM; the ROM has "j 0x80410010; nop" here. */
+#define SONG_HOOK_ADDR  0x80017CF4u
+#define SONG_ORIG_0     0x3C028005u  /* lui v0, 0x8005 */
+#define SONG_ORIG_1     0x8C428588u  /* lw  v0, -0x7a78(v0) */
 
 static void install_resident(void)
 {
@@ -57,8 +61,11 @@ static void remove_hook(void)
     volatile uint32_t *ahook = (volatile uint32_t *)(0xA0000000u | (ASSET_HOOK_ADDR & 0x1FFFFFFFu));
     hook[0] = ORIG_INSN_0;
     hook[1] = ORIG_INSN_1;
+    volatile uint32_t *shook = (volatile uint32_t *)(0xA0000000u | (SONG_HOOK_ADDR & 0x1FFFFFFFu));
     ahook[0] = ASSET_ORIG_0;
     ahook[1] = ASSET_ORIG_1;
+    shook[0] = SONG_ORIG_0;
+    shook[1] = SONG_ORIG_1;
 }
 
 void n64_main(void)

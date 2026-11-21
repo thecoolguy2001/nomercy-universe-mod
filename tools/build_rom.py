@@ -25,6 +25,10 @@ HOOK_NEW = bytes.fromhex("08104000" "00000000")    # j 0x80410000 ; nop
 ASSET_HOOK_ROM = 0x1000 + 0x37D0
 ASSET_HOOK_ORIG = bytes.fromhex("30a2ffff" "2c430001")
 ASSET_HOOK_NEW = bytes.fromhex("08104002" "00000000")    # j 0x80410008 ; nop
+# play_song (RAM 0x80017CF4) -> resident music hook
+SONG_HOOK_ROM = 0x1000 + 0x178F4
+SONG_HOOK_ORIG = bytes.fromhex("3c028005" "8c428588")
+SONG_HOOK_NEW = bytes.fromhex("08104004" "00000000")     # j 0x80410010 ; nop
 # New label asset (packed) goes in the unused ROM padding before the payload
 LABEL_ROM = 0x1FA8000
 # Single Play entry of the main-menu table (overlay stored uncompressed;
@@ -90,6 +94,10 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
     if rom[ASSET_HOOK_ROM:ASSET_HOOK_ROM + 8] != ASSET_HOOK_ORIG:
         sys.exit("asset lookup does not match the expected instructions")
     rom[ASSET_HOOK_ROM:ASSET_HOOK_ROM + 8] = ASSET_HOOK_NEW
+
+    if rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] != SONG_HOOK_ORIG:
+        sys.exit("play_song does not match the expected instructions")
+    rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] = SONG_HOOK_NEW
 
     if rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] != SP_TABLE_ORIG:
         sys.exit("Single Play menu table entry does not match")
