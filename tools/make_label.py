@@ -149,8 +149,13 @@ if __name__ == '__main__':
     text, out = sys.argv[2], sys.argv[3]
     bank = glyph_bank(rom)
     print('glyphs:', ''.join(sorted(bank)))
-    grid = compose(bank, text)
-    _, _, _, header = pixels(rom, 0x448D)       # 128x32 header + palette
-    open(out, 'wb').write(to_tex(header, grid, 128, 32))
+    # Same canvas as the game's labels: 96x32 (like Survival) when the text
+    # fits, otherwise 128x32 (like Championship).
+    used = sum(1 for x in range(4096) if any(r[x] for r in compose(bank, text, width=4096)))
+    width, template = (96, 0x448C) if used <= 90 else (128, 0x448D)
+    grid = compose(bank, text, width=width)
+    _, _, _, header = pixels(rom, template)
+    open(out, 'wb').write(to_tex(header, grid, width, 32))
+    print(f'{text!r}: {used} px of letters on a {width}x32 label')
     if len(sys.argv) > 4:
         preview(sys.argv[4], grid)

@@ -57,7 +57,7 @@ build/n64/%.o: host/%.c $(HEADERS)
 
 build/n64/universe_label.tex: tools/make_label.py tools/nm_assets.py $(ROM_IN)
 	@mkdir -p build/n64
-	python3 -I tools/make_label.py $(ROM_IN) "Universe Mode" $@
+	python3 -I tools/make_label.py $(ROM_IN) "Universe" $@
 
 build/n64/universe_label.bin build/n64/universe_label.h: build/n64/universe_label.tex tools/pack_label.py
 	python3 -I tools/pack_label.py $< build/n64/universe_label.bin build/n64/universe_label.h 0x1FA8000

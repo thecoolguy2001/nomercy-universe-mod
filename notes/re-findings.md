@@ -136,7 +136,7 @@ match (verified: Undertaker picked, match started, state=IN_MATCH).
   Championship, 0x850A Survival, 0x850B Commissioner, 0x850C/D Smackdown
   Mall/Options, 0x850E Records (asset 0x4491, unused by any menu),
   0x8510 World Heavyweight, ...
-- Universe Mode label: tools/make_label.py cuts the game's own letters
+- Universe label (text "Universe", 96x32 like Survival): tools/make_label.py cuts the game's own letters
   (Survival, Ladder Match, Options; capital U from lowercase u), packed
   at ROM 0x1FA8000. ROM patches 0x80003BD0 -> j 0x80410008; resident hook
   serves asset 0x4491 from there. Third Single Play item uses id 0x850E.
