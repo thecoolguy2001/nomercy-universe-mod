@@ -140,3 +140,12 @@ match (verified: Undertaker picked, match started, state=IN_MATCH).
   (Survival, Ladder Match, Options; capital U from lowercase u), packed
   at ROM 0x1FA8000. ROM patches 0x80003BD0 -> j 0x80410008; resident hook
   serves asset 0x4491 from there. Third Single Play item uses id 0x850E.
+
+## On-screen text (in progress)
+- Menu/footer text is ASCII in the overlay data: e.g. 0x800F3E90
+  "$4Instructions", "$6Random", "$1Option", "$eDecision" ($x = button
+  icon escape), match types, championship names, options words.
+- String pointer table at 0x800F4794 (Instructions, Random, Option,
+  Decision, ..., Watch at 0x800F47D4).
+- Draw-text routine NOT found yet (searching for the '$' escape check gave
+  only a layout routine at 0x8012D0B0 using 0x24/0x26/0x28 as sizes).
