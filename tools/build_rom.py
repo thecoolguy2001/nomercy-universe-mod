@@ -29,6 +29,11 @@ ASSET_HOOK_NEW = bytes.fromhex("08104002" "00000000")    # j 0x80410008 ; nop
 SONG_HOOK_ROM = 0x1000 + 0x178F4
 SONG_HOOK_ORIG = bytes.fromhex("3c028005" "8c428588")
 SONG_HOOK_NEW = bytes.fromhex("08104004" "00000000")     # j 0x80410010 ; nop
+# Menu overlay (code segment stored at ROM = RAM - 0x80083AE0): the per-frame
+# draw_text call at RAM 0x800DE6FC -> resident text hook
+TEXT_HOOK_ROM = 0x5AC1C
+TEXT_HOOK_ORIG = bytes.fromhex("0c037708")                # jal 0x800DDC20
+TEXT_HOOK_NEW = bytes.fromhex("0c104006")                 # jal 0x80410018
 # New label asset (packed) goes in the unused ROM padding before the payload
 LABEL_ROM = 0x1FA8000
 # Single Play entry of the main-menu table (overlay stored uncompressed;
@@ -98,6 +103,10 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
     if rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] != SONG_HOOK_ORIG:
         sys.exit("play_song does not match the expected instructions")
     rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] = SONG_HOOK_NEW
+
+    if rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] != TEXT_HOOK_ORIG:
+        sys.exit("menu text call does not match the expected instruction")
+    rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] = TEXT_HOOK_NEW
 
     if rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] != SP_TABLE_ORIG:
         sys.exit("Single Play menu table entry does not match")

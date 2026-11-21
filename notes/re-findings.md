@@ -190,3 +190,22 @@ pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.
 - Single Play menu record 0x80159C00: +0x08 table-entry ptr (0x8014F4E0),
   +0x0C u16 cursor, +0x18 u32 wheel page (0 Single, 1 Commissioner, 0x10
   Multi), +0x1C pointer.
+
+## In-game Universe screen — WORKING
+- Menu overlay CODE is stored at ROM = RAM - 0x80083AE0 (its data/tables
+  use RAM - 0x80059860). The per-frame footer text call at 0x800DE6FC
+  (jal 0x800DDC20, ROM 0x5AC1C) is patched to jal 0x80410018; the
+  resident wrapper draws the footer then Universe text into the same
+  display list.
+- Menu text routines (menu overlay): draw_text 0x800DDC20 (right-aligned)
+  and draw_text_centered 0x800DDDE8, args (Gfx **holder, str, x, y,
+  scale 255=100%, style, flags); footer uses style 0x30, flags 0x100.
+  Coordinates are in the 480x240 frame buffer (VI scales to 640).
+- Button icon escapes: $0 A, $1 B, $2 L, $3 R, $4 Z, $5 stick,
+  $6-$9 C-up/down/left/right, $a-$d D-pad up/down/left/right, $e START.
+- Panel: FILL-cycle fill rect (render mode must be 0 in FILL mode or the
+  RDP hangs - angrylion reports "RDP crashed"), then restore the game's
+  text mode EF08ACEF/00504240 and combine FC5196A3/112CFE7F.
+- Universe mode: A on the Universe item enters (input swallowed, menu
+  underneath frozen), B leaves; Undertaker theme (song 0x29) only while
+  inside the mode. The universe engine runs in the resident module.

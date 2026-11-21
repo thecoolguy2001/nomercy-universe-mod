@@ -14,7 +14,8 @@ N64_FLAGS  = --target=mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls -fno-
              -fno-stack-protector -std=c99 -Os -Wall -Wextra -Werror
 N64_OBJS   = build/n64/crt0.o build/n64/loader.o build/n64/ui.o build/n64/hw.o \
              build/n64/libc.o build/n64/universe.o build/n64/demo_roster.o
-RES_OBJS   = build/n64/res_entry.o build/n64/res_resident.o build/n64/res_libc.o
+RES_OBJS   = build/n64/res_entry.o build/n64/res_resident.o build/n64/res_uscreen.o \
+             build/n64/res_libc.o build/n64/universe.o build/n64/demo_roster.o
 PAYLOAD_CART = 0x11FB0000
 
 all: build/universe build/test_universe
@@ -66,7 +67,7 @@ build/n64/res_entry.o: n64/resident/entry.S build/n64/universe_label.h
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 
-build/n64/res_%.o: n64/resident/%.c n64/resident/resident.h
+build/n64/res_%.o: n64/resident/%.c n64/resident/resident.h n64/resident/uscreen.h $(HEADERS)
 	@mkdir -p build/n64
 	$(N64_CC) $(N64_FLAGS) -c -o $@ $<
 

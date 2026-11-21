@@ -337,6 +337,10 @@ static void dbg_ui_update(unsigned int pc)
                    frame, pc, (uint32_t)r[31], (uint32_t)r[4], (uint32_t)r[5], (uint32_t)r[6],
                    (uint32_t)r[7], (uint32_t)r[2], (uint32_t)r[29],
                    rd32(((uint32_t)r[29] + 0x10) & 0x7FFFFF));
+        if (bp_hits <= bp_limit && r && getenv("NMDBG_STACKARGS"))
+            printf("[bp]   stack 0x10..0x1C: %08X %08X %08X %08X\n",
+                   rd32(((uint32_t)r[29] + 0x10) & 0x7FFFFF), rd32(((uint32_t)r[29] + 0x14) & 0x7FFFFF),
+                   rd32(((uint32_t)r[29] + 0x18) & 0x7FFFFF), rd32(((uint32_t)r[29] + 0x1C) & 0x7FFFFF));
         if (bp_hits == bp_limit) {
             unsigned int i;
             printf("[bp] limit reached, removing breakpoints\n");
@@ -448,6 +452,13 @@ __attribute__((visibility("default"))) void ProcessRDPList(void)
             case 0x34: printf("[tex] f%u LOADTILE tile=%u s=%u..%u t=%u..%u\n", frame, w1 >> 24 & 7,
                               (w0 >> 12 & 0xFFF) >> 2, (w1 >> 12 & 0xFFF) >> 2, (w0 & 0xFFF) >> 2, (w1 & 0xFFF) >> 2); break;
             case 0x30: printf("[tex] f%u LOADTLUT tile=%u\n", frame, w1 >> 24 & 7); break;
+            case 0x36: printf("[tex] f%u FILLRECT %u,%u - %u,%u\n", frame, (w1 >> 14) & 0x3FF, (w1 >> 2) & 0x3FF,
+                              (w0 >> 14) & 0x3FF, (w0 >> 2) & 0x3FF); break;
+            case 0x2F: printf("[tex] f%u OTHERMODE %08X %08X\n", frame, w0, w1); break;
+            case 0x3C: printf("[tex] f%u COMBINE %08X %08X\n", frame, w0, w1); break;
+            case 0x3A: printf("[tex] f%u PRIMCOLOR %08X\n", frame, w1); break;
+            case 0x3F: printf("[tex] f%u COLORIMAGE fmt=%u siz=%u width=%u addr=%08X\n", frame,
+                              w0 >> 21 & 7, w0 >> 19 & 3, (w0 & 0x3FF) + 1, w1 & 0xFFFFFF); break;
             case 0x24: case 0x25: printf("[tex] f%u TEXRECT x=%u..%u y=%u..%u tile=%u\n", frame,
                               (w1 >> 12 & 0xFFF) >> 2, (w0 >> 12 & 0xFFF) >> 2, (w1 & 0xFFF) >> 2, (w0 & 0xFFF) >> 2, w1 >> 24 & 7);
                        a += 8; break;

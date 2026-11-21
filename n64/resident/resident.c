@@ -10,6 +10,7 @@
  * tab with a fixed menu route; result read from the game at the bell.
  */
 #include "resident.h"
+#include "uscreen.h"
 
 #define PIF_RAM   ((const volatile uint8_t *)0x800A0200u) /* __osContPifRam */
 #define MAX_CONT  (*(const volatile uint8_t *)0x800A2614u) /* __osMaxControllers */
@@ -165,6 +166,25 @@ static void check_result(volatile Mailbox *mb)
 #define SP_TABLE_ENTRY  0x8014F4E0u
 #define PAGE_SINGLE     0x00
 
+/* ---- Universe Mode (in-game) ---- */
+/* Menu overlay draw_text(holder, str, x, y, alpha, style, flags): 640x240
+ * coordinates; the footer uses alpha 0xFF, style 0x30, flags 0x100. */
+typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
+                             int alpha, int style, int flags);
+#define DRAW_TEXT ((draw_text_fn)0x800DDC20u)
+
+#define B_B      0x4000
+#define B_DUP    0x0800
+
+static uint8_t universe_mode;      /* 1 while the player is inside Universe */
+static uint8_t swallow;            /* block game input until buttons are released */
+static uint16_t prev_buttons;
+
+void universe_draw(void *holder)
+{
+    if (universe_mode) us_draw(holder);
+}
+
 static int universe_highlighted(void)
 {
     return RAM32(SP_RECORD + 0x08) == SP_TABLE_ENTRY &&
@@ -187,8 +207,29 @@ static void universe_frame(OSContPad *pads)
     mb->last_buttons = pads[0].button;
     tick();
 
-    /* Universe Mode's music is The Undertaker's theme */
-    mb->music_override = universe_highlighted() ? SONG_UNDERTAKER : 0;
+    {
+        uint16_t btn = pads[0].button;
+        uint16_t pressed = btn & (uint16_t)~prev_buttons;
+        prev_buttons = btn;
+        if (!universe_mode) {
+            if (swallow) {
+                if (btn) pads[0].button = 0; else swallow = 0;
+            } else if (universe_highlighted() && (pressed & B_A)) {
+                universe_mode = 1;          /* enter Universe; the game never sees this A */
+                us_enter(cp0_count());
+                pads[0].button = 0;
+            }
+        } else {
+            if (!us_input(pressed)) {
+                universe_mode = 0;          /* back to the Single Play menu */
+                swallow = 1;
+            }
+            pads[0].button = 0;             /* the menu underneath gets no input */
+        }
+    }
+
+    /* Universe Mode's music is The Undertaker's theme (only inside the mode) */
+    mb->music_override = universe_mode ? SONG_UNDERTAKER : 0;
 
     if (mb->song_request & 0x100) {
         uint32_t song = mb->song_request & 0xFF;

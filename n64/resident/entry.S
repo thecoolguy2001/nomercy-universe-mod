@@ -2,6 +2,7 @@
 #   0x80410000  osContGetReadData hook  (ROM: 0x800346A8 -> j 0x80410000)
 #   0x80410008  asset lookup hook       (ROM: 0x80003BD0 -> j 0x80410008)
 #   0x80410010  play_song hook          (ROM: 0x80017CF4 -> j 0x80410010)
+#   0x80410018  menu text hook          (ROM 0x5AC1C: jal 0x800DDC20 -> jal 0x80410018)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -21,6 +22,34 @@ asset_lookup_entry:
 play_song_entry:
     j       play_song_hook
     nop
+
+    .globl text_entry
+text_entry:
+    j       text_hook
+    nop
+
+# Replaces the menu's per-frame draw_text(holder, str, x, y, alpha, style,
+# flags) call (0x800DDC20, called from 0x800DE6FC). Draws the original text,
+# then lets Universe Mode draw its own lines into the same display list.
+text_hook:
+    addiu   $sp, $sp, -0x40
+    sw      $ra, 0x3C($sp)
+    sw      $a0, 0x20($sp)
+    lw      $t0, 0x50($sp)          # caller's stack arguments 0x10..0x18
+    sw      $t0, 0x10($sp)
+    lw      $t0, 0x54($sp)
+    sw      $t0, 0x14($sp)
+    lw      $t0, 0x58($sp)
+    sw      $t0, 0x18($sp)
+    lui     $t9, 0x800D
+    ori     $t9, $t9, 0xDC20
+    jalr    $t9
+    nop
+    jal     universe_draw
+    lw      $a0, 0x20($sp)
+    lw      $ra, 0x3C($sp)
+    jr      $ra
+    addiu   $sp, $sp, 0x40
 
 # play_song(a0 = song, a1 = mode, a2 = volume) at 0x80017CF4. While the
 # mailbox flag music_override (0x80408024) holds a song, menu-music
