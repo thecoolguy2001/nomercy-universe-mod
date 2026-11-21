@@ -280,6 +280,15 @@ static void run_cmd(const Cmd *c)
                dbg_bkp_cmd(2 /* ADD_STRUCT */, 0, &b));
     } else if (!strcmp(c->cmd, "bplimit")) {
         bp_limit = (uint32_t)atoi(c->a);
+    } else if (!strcmp(c->cmd, "logstr")) {   /* logstr PTRADDR: print the string it points to */
+        uint32_t pa = ram_off(c->a), p = rd32(pa) & 0xFFFFFF, i;
+        printf("[nmdbg] frame %u *%s = %08X \"", frame, c->a, rd32(pa));
+        for (i = 0; i < 24 && p + i < rdram_size; i++) {
+            uint8_t ch = rd8(p + i);
+            if (!ch) break;
+            putchar(ch >= 32 && ch < 127 ? ch : '?');
+        }
+        printf("\"\n");
     } else if (!strcmp(c->cmd, "texlog")) {
         texlog_until = frame + (uint32_t)atoi(c->a);
     } else if (!strcmp(c->cmd, "endtrig")) {

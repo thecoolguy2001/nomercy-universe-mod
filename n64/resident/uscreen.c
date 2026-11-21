@@ -25,10 +25,13 @@ typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
 #define B_START  0x1000
 #define B_DUP    0x0800
 #define B_DDOWN  0x0400
+#define B_Z      0x2000
+#define B_R      0x0010
 
 static Universe U;
 static UShow    SHOW;
 static uint8_t  started, show_ready, cursor, view;  /* view 0 card, 1 results */
+static uint8_t  pending = U_NONE, pending_watch;    /* match being played/watched in the game */
 
 #define MAX_LINES 10
 #define LINE_LEN  48
@@ -158,6 +161,12 @@ int us_input(uint16_t pressed)
         if (pressed & (B_A | B_START)) finish_show();
         return 1;
     }
+    if ((pressed & (B_Z | B_R)) && !SHOW.m[cursor].done &&
+        SHOW.m[cursor].type == U_MT_SINGLES) {
+        pending = cursor;
+        pending_watch = (pressed & B_Z) ? 1 : 0;
+        return 2;                         /* resident launches the real match */
+    }
     if (pressed & B_START) {
         int i;
         for (i = 0; i < SHOW.count; i++)
@@ -166,6 +175,26 @@ int us_input(uint16_t pressed)
         u_sim_match(&U, &SHOW.m[cursor]);
     }
     return 1;
+}
+
+const char *us_pending_name(int side)
+{
+    return demo_game_name(SHOW.m[pending].side[side][0]);
+}
+
+int us_pending_watch(void) { return pending_watch; }
+
+/* Result of a match played/watched in No Mercy. The loser's result byte
+ * says how they lost; 1 = pinned (seen on every pinfall so far). */
+void us_match_result(int winner_side, int loser_code)
+{
+    UMatch *m;
+    if (pending == U_NONE) return;
+    m = &SHOW.m[pending];
+    u_set_result(m, (uint8_t)winner_side,
+                 m->stip == U_STIP_LADDER ? U_WIN_SPECIAL : U_WIN_PINFALL);
+    (void)loser_code;
+    pending = U_NONE;
 }
 
 void us_draw(void *holder)
@@ -217,6 +246,10 @@ void us_draw(void *holder)
         if (m->done) { s_add(&s, "  by "); s_add(&s, u_method_name(m->method, m->stip)); }
         small(holder, line[10], 176);
     }
-    text(holder, card_done() ? "$0Results   $1Back"
-                             : "$0Sim  $eSim All  $1Back", 198);
+    if (card_done())
+        text(holder, "$0Results   $1Back", 198);
+    else if (SHOW.m[cursor].type == U_MT_SINGLES)
+        small(holder, "$3Play $4Watch $0Sim $eAll $1Back", 198);
+    else
+        small(holder, "$0Sim  $eSim All  $1Back", 198);
 }

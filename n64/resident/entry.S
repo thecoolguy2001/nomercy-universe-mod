@@ -3,6 +3,7 @@
 #   0x80410008  asset lookup hook       (ROM: 0x80003BD0 -> j 0x80410008)
 #   0x80410010  play_song hook          (ROM: 0x80017CF4 -> j 0x80410010)
 #   0x80410018  menu text hook          (ROM 0x5AC1C: jal 0x800DDC20 -> jal 0x80410018)
+#   0x80410020  text-image hook         (ROM: 0x80009FFC -> j 0x80410020)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -26,6 +27,34 @@ play_song_entry:
     .globl text_entry
 text_entry:
     j       text_hook
+    nop
+
+    .globl text_seen_entry
+text_seen_entry:
+    j       text_seen_hook
+    nop
+
+# get_text_image(a0 = string | flags, a1 = style) at 0x80009FFC: every
+# piece of on-screen text passes through here. Tell the director which
+# strings are being drawn (used to recognise the highlighted wrestler),
+# then continue into the original routine.
+text_seen_hook:
+    addiu   $sp, $sp, -0x28
+    sw      $ra, 0x24($sp)
+    sw      $a0, 0x18($sp)
+    sw      $a1, 0x1C($sp)
+    sw      $a2, 0x20($sp)
+    jal     text_seen
+    sw      $a3, 0x14($sp)
+    lw      $ra, 0x24($sp)
+    lw      $a0, 0x18($sp)
+    lw      $a1, 0x1C($sp)
+    lw      $a2, 0x20($sp)
+    lw      $a3, 0x14($sp)
+    addiu   $sp, $sp, 0x28
+    addiu   $sp, $sp, -0x50       # the two instructions the ROM patch replaced
+    sw      $22, 0x48($sp)
+    j       0x8000A004
     nop
 
 # Replaces the menu's per-frame draw_text(holder, str, x, y, alpha, style,

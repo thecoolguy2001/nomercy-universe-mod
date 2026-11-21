@@ -29,6 +29,10 @@ ASSET_HOOK_NEW = bytes.fromhex("08104002" "00000000")    # j 0x80410008 ; nop
 SONG_HOOK_ROM = 0x1000 + 0x178F4
 SONG_HOOK_ORIG = bytes.fromhex("3c028005" "8c428588")
 SONG_HOOK_NEW = bytes.fromhex("08104004" "00000000")     # j 0x80410010 ; nop
+# get_text_image (RAM 0x80009FFC) -> resident text-seen hook
+TEXTIMG_HOOK_ROM = 0xABFC
+TEXTIMG_HOOK_ORIG = bytes.fromhex("27bdffb0" "afb60048")
+TEXTIMG_HOOK_NEW = bytes.fromhex("08104008" "00000000")  # j 0x80410020 ; nop
 # Menu overlay (code segment stored at ROM = RAM - 0x80083AE0): the per-frame
 # draw_text call at RAM 0x800DE6FC -> resident text hook
 TEXT_HOOK_ROM = 0x5AC1C
@@ -103,6 +107,10 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None):
     if rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] != SONG_HOOK_ORIG:
         sys.exit("play_song does not match the expected instructions")
     rom[SONG_HOOK_ROM:SONG_HOOK_ROM + 8] = SONG_HOOK_NEW
+
+    if rom[TEXTIMG_HOOK_ROM:TEXTIMG_HOOK_ROM + 8] != TEXTIMG_HOOK_ORIG:
+        sys.exit("get_text_image does not match the expected instructions")
+    rom[TEXTIMG_HOOK_ROM:TEXTIMG_HOOK_ROM + 8] = TEXTIMG_HOOK_NEW
 
     if rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] != TEXT_HOOK_ORIG:
         sys.exit("menu text call does not match the expected instruction")

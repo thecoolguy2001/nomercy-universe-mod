@@ -291,7 +291,7 @@ static void test_rivalry_booked(void)
     UShow s;
     int i, found = 0;
     demo_universe(&u, 11);
-    u_add_rivalry(&u, 4, 5, 90); /* Big Show vs Rikishi (Raw) */
+    u_add_rivalry(&u, 4, 5, 90); /* Bull Buchanan vs Rikishi (Raw) */
     u_book_show(&u, &s);
     for (i = 0; i < s.count; i++)
         if (s.m[i].type == U_MT_SINGLES && involves(&s.m[i], 4) && involves(&s.m[i], 5))

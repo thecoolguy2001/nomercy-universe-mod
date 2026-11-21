@@ -17,7 +17,7 @@ static const struct {
     /* 1 */ {"Triple H",       R, U_HEEL, 91},
     /* 2 */ {"Kurt Angle",     R, U_HEEL, 88},
     /* 3 */ {"Kane",           R, U_HEEL, 85},
-    /* 4 */ {"Big Show",       R, U_HEEL, 80},
+    /* 4 */ {"Bull Buchanan",  R, U_HEEL, 80},
     /* 5 */ {"Rikishi",        R, U_FACE, 78},
     /* 6 */ {"Edge",           R, U_HEEL, 77},
     /* 7 */ {"Christian",      R, U_HEEL, 75},
@@ -38,6 +38,20 @@ static const struct {
     /*22 */ {"Test",           S, U_FACE, 72},
     /*23 */ {"Mankind",        S, U_FACE, 84},
 };
+
+/* Names exactly as No Mercy shows them on Superstar Select, by wrestler id
+ * (used to pick the right wrestler when a match is played in the game). */
+static const char *const GAME_NAMES[] = {
+    "THE ROCK", "TRIPLE H", "KURT ANGLE", "KANE", "BULL BUCHANAN", "RIKISHI",
+    "EDGE", "CHRISTIAN", "BUH BUH RAY DUDLEY", "D-VON DUDLEY", "VAL VENIS", "X-PAC",
+    "STEVE AUSTIN", "UNDERTAKER", "CHRIS JERICHO", "CHRIS BENOIT", "EDDIE GUERRERO",
+    "TAZZ", "JEFF HARDY", "MATT HARDY", "ROAD DOGG", "MR. ASS", "TEST", "MANKIND",
+};
+
+const char *demo_game_name(uint8_t id)
+{
+    return id < sizeof GAME_NAMES / sizeof GAME_NAMES[0] ? GAME_NAMES[id] : "";
+}
 
 void demo_universe(Universe *u, uint32_t seed)
 {

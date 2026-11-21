@@ -209,3 +209,23 @@ pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.
 - Universe mode: A on the Universe item enters (input swallowed, menu
   underneath frozen), B leaves; Undertaker theme (song 0x29) only while
   inside the mode. The universe engine runs in the resident module.
+
+## Play / Watch from Universe (in progress)
+- Setting the Universe item's mode byte (0x8040903F) to 0x02 and pressing A
+  opens Exhibition's MATCH tab directly from Single Play.
+- Superstar Select: grid cursor value is per page (0-8); page variable
+  0x800AAAB7; cursor writes only work on some pages, so navigation is by
+  D-pad/R presses. Six pages for P1, more (LADIES) for the CPU side.
+- 0x802EFB28 is NOT a highlight variable - it is a text-cache slot (writes
+  come from 0x8000A07C/0x8000A29C). Instead the resident hooks
+  get_text_image 0x80009FFC (ROM 0xABFC -> j 0x80410020) and recognises the
+  highlighted wrestler when his full name string is drawn (the bottom
+  label animates in: allow ~40 frames per move).
+- Wrestler attire table in RAM (0x8031A398, 4 records of 0x4E per
+  wrestler, full name at +0, short name at +0x15) gives the game's
+  internal order: Rock, Austin, Undertaker, Kane, Steven Richards,
+  Mankind, Cactus Jack, Mick Foley, HBK, Triple H, X-Pac, Mr. Ass, Road
+  Dogg, Benoit, Malenko, Saturn, Guerrero, Jericho, Angle, Tazz, ...
+  (Big Show is not in No Mercy.)
+- Verified: Z on a card match -> Exhibition -> Watch -> both wrestlers
+  picked by name (Val Venis, X-Pac) -> match starts.
