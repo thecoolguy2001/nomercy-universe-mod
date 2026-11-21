@@ -347,12 +347,33 @@ static void dbg_ui_update(unsigned int pc)
             return;
         }
         if (r) { last_pc = pc; last_a0 = (uint32_t)r[4]; last_ra = (uint32_t)r[31]; }
-        bp_hits++;
-        if (bp_hits <= bp_limit && r)
+        if (!getenv("NMDBG_EA")) bp_hits++;
+        if (bp_hits <= bp_limit && r && !getenv("NMDBG_EA"))
             printf("[bp] frame %u pc=%08X ra=%08X a0=%08X a1=%08X a2=%08X a3=%08X v0=%08X sp=%08X arg4=%08X\n",
                    frame, pc, (uint32_t)r[31], (uint32_t)r[4], (uint32_t)r[5], (uint32_t)r[6],
                    (uint32_t)r[7], (uint32_t)r[2], (uint32_t)r[29],
                    rd32(((uint32_t)r[29] + 0x10) & 0x7FFFFF));
+        if (bp_hits <= bp_limit && r && getenv("NMDBG_EA")) {
+            /* decode the load/store at pc (and pc-4) and print its effective address */
+            int k;
+            for (k = 0; k < 2; k++) {
+                uint32_t ia = (pc - 4 * k) & 0x7FFFFF, ins = rd32(ia), op = ins >> 26;
+                if (op >= 0x20 && op <= 0x2F) {
+                    uint32_t base = (ins >> 21) & 31; int16_t off = (int16_t)(ins & 0xFFFF);
+                    {
+                        static uint32_t seen_pc[1024], seen_ea[1024];
+                        static int nseen;
+                        uint32_t ea = (uint32_t)r[base] + off, j;
+                        int dup = 0;
+                        for (j = 0; j < (uint32_t)nseen; j++)
+                            if (seen_pc[j] == pc && seen_ea[j] == ea) { dup = 1; break; }
+                        if (!dup && nseen < 1024) { seen_pc[nseen] = pc; seen_ea[nseen++] = ea; }
+                        if (!dup) printf("[ea] frame %u pc=%08X ea=%08X insn=%08X\n", frame, pc - 4 * k, ea, ins);
+                    }
+                    break;
+                }
+            }
+        }
         if (bp_hits <= bp_limit && r && getenv("NMDBG_STACKARGS"))
             printf("[bp]   stack 0x10..0x1C: %08X %08X %08X %08X\n",
                    rd32(((uint32_t)r[29] + 0x10) & 0x7FFFFF), rd32(((uint32_t)r[29] + 0x14) & 0x7FFFFF),

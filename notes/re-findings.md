@@ -237,3 +237,17 @@ pc, ra, a0-a3, v0, sp and resumes. ~3x slower than normal runs.
   Commissioner, D-down to cursor 2) and reopens the Universe screen.
 - Debugger: `endtrig keep` keeps running after the bell and rebases script
   commands with frame >= 90000 to "bell + (frame - 90000)".
+
+## Real match setup (in progress, replacing the menu-driving director)
+User feedback (2026-11-21): grid search too slow; Watch sometimes became
+1P vs CPU (timed D-pad presses); title matches not set (BELT tab never
+used). Goal: write the match setup directly instead of driving menus.
+- 0x80159720 picks are NOT read by the match loader (read watchpoints
+  over 0x80159600-0x801597FF from confirm to intro only show menu reads).
+- At each Superstar Select confirm, fixed-memory slots go 255 -> value:
+  0x800AAAD0 (P1: Angle 3, Austin 0), 0x800AAADC/0x800AAADD (CPU: Kane
+  0/4, Jericho 3/1). Related: 0x800A556F, 0x800AA0CE/D2, 0x8015B81F/23.
+  Looks like a per-player selection table - next: decode its meaning and
+  find what the match loader reads (bpr on 0x800AAAC0-0x800AAAFF).
+- Debugger: NMDBG_EA=1 decodes the load/store at each memory-breakpoint
+  hit and logs unique (pc, effective address) pairs as [ea] lines.
