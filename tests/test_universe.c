@@ -133,6 +133,15 @@ static void test_booking_invariants(void)
             for (i = 0; i < s.count; i++) {
                 const UMatch *m = &s.m[i];
                 CHECK(m->format < U_FMT_COUNT && m->stip < U_STIP_COUNT);
+                CHECK(u_stip_supported(m->format, m->stip));
+                /* a guest referee is a wrestler of the roster, not in the match */
+                CHECK((m->referee != U_NONE) == (m->stip == U_STIP_REFEREE));
+                if (m->referee != U_NONE) {
+                    CHECK(m->referee < u.n_wrestlers && !involves(m, m->referee));
+                    CHECK(!seen[m->referee]);
+                    seen[m->referee] = 1;
+                    CHECK(u.w[m->referee].active && u.w[m->referee].injured_weeks == 0);
+                }
                 for (k = 0; k < 6; k++) {
                     uint8_t id = m->side[k / 2][k % 2];
                     /* who may be on each side, by format */
@@ -275,6 +284,7 @@ static void test_played_result_validation(void)
     demo_universe(&u, 3);
     u_book_show(&u, &s);
     m = s.m[0];
+    m.format = U_FMT_SINGLE;
     m.stip = U_STIP_NORMAL;
     CHECK(u_set_result(&m, 2, U_WIN_PINFALL) == -1);
     CHECK(u_set_result(&m, 0, U_WIN_METHOD_COUNT) == -1);
@@ -290,14 +300,74 @@ static void test_played_result_validation(void)
     m.done = 0;
     m.stip = U_STIP_IRONMAN;
     CHECK(u_set_result(&m, 0, U_WIN_PINFALL) == -1);
-    CHECK(u_set_ironman_result(&m, 2, 2) == -1);
-    CHECK(u_set_ironman_result(&m, 1, 3) == 0);
-    CHECK(m.winner == 1 && m.method == U_WIN_FALLS && m.falls[1] == 3);
+    {
+        const uint8_t level[3] = {2, 2, 0}, win[3] = {1, 3, 0}, three[3] = {1, 2, 4};
+        CHECK(u_set_ironman_result(&m, win) == 0);
+        CHECK(m.winner == 1 && m.method == U_WIN_FALLS && m.falls[1] == 3);
+        CHECK(u_set_ironman_result(&m, level) == 0);   /* level on falls: a draw */
+        CHECK(m.done && m.winner == U_NONE && m.method == U_WIN_DRAW);
+        m.format = U_FMT_TRIPLE;
+        CHECK(u_set_ironman_result(&m, three) == 0);
+        CHECK(m.winner == 2 && m.falls[2] == 4);
+        m.format = U_FMT_SINGLE;
+    }
+    m.done = 0;
+    m.stip = U_STIP_NODQ;
+    CHECK(u_set_result(&m, 0, U_WIN_DQ) == -1);
+    CHECK(u_set_result(&m, 0, U_WIN_COUNTOUT) == -1);
+    CHECK(u_set_result(&m, 0, U_WIN_PINFALL) == 0);
+    CHECK(u_set_result(&m, 0, U_WIN_DRAW) == -1);      /* draws: u_set_draw */
+    CHECK(u_set_draw(&m) == 0 && m.winner == U_NONE && m.method == U_WIN_DRAW);
     m.done = 0;
     m.format = U_FMT_TRIPLE;
     m.stip = U_STIP_NORMAL;
     CHECK(u_set_result(&m, 2, U_WIN_PINFALL) == 0);
     CHECK(u_set_result(&m, 3, U_WIN_PINFALL) == -1);
+}
+
+/* The game's supported combinations (notes/universe-plan.md) */
+static void test_supported_combinations(void)
+{
+    int f, st;
+    for (f = 0; f < U_FMT_COUNT; f++)
+        for (st = 0; st < U_STIP_COUNT; st++)
+            CHECK(u_stip_supported((uint8_t)f, (uint8_t)st) ==
+                  (st == U_STIP_CAGE ? f == U_FMT_SINGLE
+                   : st == U_STIP_REFEREE ? f != U_FMT_TAG : 1));
+    CHECK(!u_stip_supported(U_FMT_COUNT, U_STIP_NORMAL));
+    CHECK(!u_stip_supported(U_FMT_SINGLE, U_STIP_COUNT));
+}
+
+/* A drawn title match: nobody wins or loses, the champion keeps the title,
+ * the feud is not settled. */
+static void test_draw(void)
+{
+    Universe u;
+    UShow s;
+    int mi, k, sides;
+    uint16_t tot[U_MAX_WRESTLERS];
+    uint8_t holder;
+    demo_universe(&u, 3);
+    mi = next_title_match(&u, &s, 0);
+    CHECK(mi >= 0);
+    if (mi < 0) return;
+    holder = u_title_holder(&u, 0);
+    for (k = 0; k < u.n_wrestlers; k++) tot[k] = (uint16_t)(u.w[k].wins + u.w[k].losses);
+    CHECK(u_set_draw(&s.m[mi]) == 0);
+    {
+        char t[96];
+        u_match_text(&u, &s.m[mi], 1, t, sizeof t);
+        CHECK(strstr(t, "Draw") != 0 && strstr(t, " def. ") == 0);
+    }
+    sides = u_match_sides(&s.m[mi]);
+    for (k = 0; k < s.count; k++)
+        if (k != mi) u_sim_match(&u, &s.m[k]);
+    u_apply_show(&u, &s);
+    CHECK(u_title_holder(&u, 0) == holder && !s.m[mi].title_changed);
+    for (k = 0; k < 2 * sides; k++) {
+        uint8_t id = s.m[mi].side[k / 2][k % 2];
+        if (id != U_NONE) CHECK(u.w[id].wins + u.w[id].losses == tot[id]);
+    }
 }
 
 static void test_rivalry_booked(void)
@@ -345,7 +415,7 @@ static void test_cross_brand_rivalry_at_ppv(void)
     for (i = 0; i < s.count; i++)
         if (involves(&s.m[i], 12) && involves(&s.m[i], 1)) {
             found = 1;
-            CHECK(s.m[i].stip == U_STIP_CAGE || s.m[i].stip == U_STIP_LADDER);
+            CHECK(u_stip_supported(s.m[i].format, s.m[i].stip));
         }
     CHECK(found);
 }
@@ -450,6 +520,35 @@ static void test_formats_booked(void)
     CHECK(cages > 0);
 }
 
+/* Over a few years every stipulation turns up (interim booking). */
+static void test_stips_booked(void)
+{
+    uint32_t seed;
+    int count[U_STIP_COUNT] = {0}, st;
+    for (seed = 1; seed <= 6; seed++) {
+        Universe u;
+        UShow s;
+        int show, i;
+        demo_universe(&u, seed);
+        for (show = 0; show < 52 * 2 + 13; show++) {
+            u_book_show(&u, &s);
+            for (i = 0; i < s.count; i++) {
+                count[s.m[i].stip]++;
+                u_sim_match(&u, &s.m[i]);
+                if (s.m[i].stip == U_STIP_IRONMAN) {
+                    int k, top = 0;
+                    for (k = 0; k < u_match_sides(&s.m[i]); k++)
+                        if (k != s.m[i].winner && s.m[i].falls[k] >= s.m[i].falls[s.m[i].winner])
+                            top = 1;
+                    CHECK(!top);   /* the winner has the most falls */
+                }
+            }
+            u_apply_show(&u, &s);
+        }
+    }
+    for (st = 0; st < U_STIP_COUNT; st++) CHECK(count[st] > 0);
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -466,6 +565,9 @@ int main(void)
     test_injured_skip();
     test_roster_management();
     test_formats_booked();
+    test_supported_combinations();
+    test_draw();
+    test_stips_booked();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;

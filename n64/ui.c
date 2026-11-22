@@ -81,7 +81,8 @@ static int show_valid(const UShow *s, const Universe *u)
         if (m->format == U_FMT_TAG &&
             (m->team[0] >= u->n_teams || m->team[1] >= u->n_teams)) return 0;
         if (m->title != U_NONE && m->title >= u->n_titles) return 0;
-        if (m->stip >= U_STIP_COUNT || (m->done && m->winner >= u_match_sides(m))) return 0;
+        if (m->stip >= U_STIP_COUNT ||
+            (m->done && m->winner >= u_match_sides(m) && m->method != U_WIN_DRAW)) return 0;
     }
     return 1;
 }
@@ -249,7 +250,7 @@ static void draw_card(void)
         if (m->stip != U_STIP_NORMAL) { ln_str(&l, u_stip_name(m->stip)); ln_str(&l, " "); }
         if (m->done) {
             ln_str(&l, "> ");
-            ln_str(&l, side_name(m, m->winner));
+            ln_str(&l, m->method == U_WIN_DRAW ? "DRAW" : side_name(m, m->winner));
             ln_str(&l, m->source == U_SRC_PLAYED ? " (PLAYED)" : "");
             text(0, row + 1, l.b, C_GOOD);
         } else if (pending == i) {
@@ -300,7 +301,8 @@ static int allowed_methods(const UMatch *m)
 {
     int i, n = 0;
     for (i = 0; i < U_WIN_METHOD_COUNT; i++)
-        if (u_method_allowed(m->stip, (uint8_t)i)) report_methods[n++] = (uint8_t)i;
+        if (i != U_WIN_DRAW && u_method_allowed(m->stip, (uint8_t)i))
+            report_methods[n++] = (uint8_t)i;
     return n;
 }
 

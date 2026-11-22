@@ -2,23 +2,38 @@
 #define USCREEN_H
 #include <stdint.h>
 void us_enter(uint32_t seed);          /* create/continue the universe, book a card */
+void us_test_stip(uint32_t stip);      /* test: 1 + U_STIP_* forced on new cards (0 = off) */
 int  us_input(uint16_t pressed);       /* 0 = leave, 1 = stay, 2 = play/watch the pending match */
 void us_draw(void *holder);
 int  us_show_arena(void);              /* No Mercy arena of the current show */
 void us_draw_cover(void *holder);      /* full-screen cover, at the end of the frame */
 void us_cover(int on);                 /* 1: cover the whole screen (menu being steered) */
 int  us_pending_watch(void);           /* 1 = Watch (CPU vs CPU), 0 = Play */
+
+#define US_RULES 12
 /* What to set up in the game for the match to play */
 typedef struct {
-    uint8_t n_slots;        /* wrestlers picked on Superstar Select */
-    uint8_t match_item;     /* Exhibition MATCH tab item */
+    uint8_t mode;           /* game mode the Universe item opens (Exhibition, Ladder, ...) */
+    uint8_t match_item;     /* MATCH tab item */
+    uint8_t player;         /* PLAYER tab value (Play or Watch) */
+    uint8_t n_slots;        /* picks on Superstar Select (a guest referee is the first) */
+    uint8_t tag;            /* tag partners are picked back to back (slots 1 and 3) */
     uint8_t wrestler[4];    /* No Mercy wrestler number per slot */
+    uint8_t human[4];       /* per slot: 1 = the player's controller, 0 = CPU */
+    uint8_t rules[US_RULES];/* the RULES tab row the match is played with */
     int     belt;           /* game belt on the line, -1 = none */
     uint8_t champion[2];    /* its champion's wrestler number(s), tag: both (0 = vacant) */
 } USetup;
 void us_pending_setup(USetup *st);
-/* game_n: No Mercy wrestler numbers that actually wrestled (0 = unknown).
- * Called again after a rematch, replacing the result. */
-void us_match_result(const uint8_t result[4], const uint8_t game_n[4]);
+
+/* How the game's match ended */
+typedef struct {
+    uint8_t result[4];      /* game result byte per slot: 4 = won */
+    uint8_t game_n[4];      /* No Mercy wrestler numbers that actually wrestled (0 = unknown) */
+    uint8_t method;         /* U_WIN_* read from the game */
+    uint8_t falls[4];       /* Ironman: falls per slot */
+} UGameResult;
+/* Called again after a rematch, replacing the result. */
+void us_match_result(const UGameResult *r);
 void us_match_closed(void);            /* back on the menus: match finished with */
 #endif

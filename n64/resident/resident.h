@@ -44,7 +44,9 @@ typedef struct {
     uint32_t music_override; /* 0x24 song that replaces menu music (0 = off); read by the asm hook */
     uint32_t test_select;    /* 0x28 test: 1 = press A on the Universe item (bypassing Universe Mode) */
     uint32_t test_seed;      /* 0x2C test: non-zero = seed for a new universe (repeatable cards) */
-    uint32_t reserved[4];
+    uint32_t test_stip;      /* 0x30 test: 1 + U_STIP_* given to every match of new cards that allows it */
+    uint32_t test_time;      /* 0x34 test: 1 + RULES time limit (0 5 min .. 5 none) for every match */
+    uint32_t reserved[2];
 } Mailbox;
 
 #endif

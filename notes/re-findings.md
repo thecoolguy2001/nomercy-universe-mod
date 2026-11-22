@@ -357,3 +357,76 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   winning team), 3 / 1 = lost, 0 = not involved in the finish (triple).
 - Tag belt: SETUP_BELT 1 + champion bytes +2 / +3 (0x800A53E2 + 0x34) shows
   the "Tag Team Championship" intro.
+
+## RULES, Multi Play modes, Guest Referee (plan step 2, 2026-11-22)
+- Multi Play items (22-byte records at 0x8014D3E0, byte 19 = mode): 0
+  Exhibition 0x02, ..., 4 Guest Referee 0x0D, 5 Ladder 0x0E, 6 Ironman 0x0F.
+  Writing the mode into the Universe item opens that mode; its MATCH /
+  PLAYER tabs use the same screens (07 / 06) and variables.
+- Match-type word u32 0x800AAAAC: Exhibition 1 << item (Cage 0x10);
+  Ladder 0x40 | format bit, Guest Referee 0x80 | (1 Single, 4 Triple,
+  8 Handicap), Ironman 0x100 | format bit.
+- PLAYER values: Ladder / Ironman as Exhibition (1P / Watch: Single 1/3,
+  Tag 5/7, Triple 3/6, Handicap 3/5). Guest Referee: one choice with one
+  controller, "REF. CPU vs CPU" (Single 3, Triple 6, Handicap 5); the
+  referee is the first pick (Superstar Select labels it "1P Referee"),
+  slot 0 +3 = 1.
+- RULES live row 0x800931D8 (12 bytes): 0 rules slot (0 Single, 1 Tag,
+  2 Triple, 3 Handicap, 4 Cage, 5 Ladder, 6-8 Guest Referee Single /
+  Triple / Handicap, 9-12 Ironman Single / Tag / Triple / Handicap,
+  13 = type bit 0x200), 1 time limit (0 5 min, 1 10, 2 15, 3 30, 4 60,
+  5 none), 2 count out (0 10 counts, 1 20, 2 hardcore, 3 none), 3 pin,
+  4 submission, 5 TKO, 6 rope break, 7 DQ, 8 bloodshed, 9 interference
+  (0 yes, 1 no), 10 tag help time (0 5 s, 1 10 s, 2 20, 3 30, 4 60,
+  5 no tag). Defaults: Exhibition types 05 03 00 00 01 00 01 00 00 (no
+  limit, no count-out, no DQ); Ironman 04 01 00 00 01 00 00 00 00 (60 min,
+  20 counts, DQ on), tag help 10 s for Ironman Tag. Cage and Ladder show
+  only Time Limit and Bloodshed; Guest Referee has no Interference row,
+  tag types show Tag Help Time instead of Interference.
+- Opening the RULES tab (0x801353BC) fills the live row from the match
+  type's saved rules (0x80134CA8 -> 0x800E40F0, unpacks into 0x800AB574).
+  Nothing else writes it, so a match started without opening the tab uses
+  whatever the live row holds.
+- A on the loading screen first turns the match rules 0x800AB574 into the
+  match settings (0x80137414 -> code at 0x801375B8..0x80137A7C: flags
+  u32 0x800AAE80, time limit 0x800A139C from table 0x801515BC[TL], ...),
+  then commits: 0x80135640(1) copies the live row to 0x800AB574 and, for
+  0x800AAAA8 < 2, packs it into the save data as that match type's saved
+  rules: jal 0x800E4A98(slot) at 0x8013576C -> (*0x800F7634) + 0x6E28 +
+  4 * slot (14 slots, e.g. 0x802EBBF8, in the menu heap that the match
+  reuses for decompressed data). A few frames later the save code
+  (0x80004848: compare with the copy at 0x800634D8, queue 0x78-byte
+  chunks at 0x80063CD8) writes the change to the cartridge.
+  So a match started without opening RULES uses the stale 0x800AB574,
+  and a new live row only applies to the next match.
+- Universe: writes its row into both 0x800931D8 and 0x800AB574 before the
+  match, makes the jal at 0x8013576C a nop while it runs a match (checked
+  words around it: 0x24040004 before, nop after), and puts the player's
+  two rows back when it returns to Universe. The saved rules are never
+  touched. Verified: Ironman with time limit 0 counts down from 5:00.
+
+## Match end: result bytes, falls, finish (2026-11-22)
+- Per slot (stride 0x358): result 0x8015AF45 (4 won, 1/3 lost). Only
+  valid on the match screen (2A): the game clears the result bytes a few
+  seconds after the bell (still on 2A), and the result screen (1D) reuses
+  the area.
+- Ironman falls (the HUD counters), matched against HUD screenshots of a
+  2-2 match: u32 per slot at 0x8015A738 (slot 0 low byte 0x8015A73B,
+  slot 1 0x8015A73F); also bytes 0x80159ED0 (slot 0) / 0x80159ED3 (slot 1).
+  Tag / triple ironman layout not checked yet.
+- Ironman: a fall sets the pinned wrestler's result byte to 1 for a moment
+  and adds 1 to the scorer's falls; nobody gets 4 until the end. A 0-0
+  time-up ends with all result bytes 0. The clock counts down.
+- Finish flags u32 0x800A261C, set at the bell, still there on the result
+  screen: 0x2000 submission, 0x4000 pin, 0x8000 draw (time limit),
+  0x10000 TKO, 0x20000 DQ, 0x80000 / 0x100000 / 0x200000 / 0x400000
+  count out, 0x800 / 0x40000 / 0x1000000 / 0x2000000 no caption. The result
+  screen calls 0x8010B3F8(flags) -> u32 0x801597C0 = caption + 1; caption
+  text id 0xF1AF + value through 0x800DEC70 (ids 0xF0CE.. -> pointer table
+  0x800B8458): table 0x800F4B18 = Draw, Submit, Pin, Draw, TKO, Count out
+  x5, TKO, "", DQ, "", "". Seen: pin 0x4412, time-limit draw 0x9400.
+- Match record 0x800A99F0 + 12 * (s16 0x800A9CB4 - 1): u16 minutes, u16
+  seconds, ..., u16 flags at +10 (same value as 0x800A261C).
+- Universe records every match when the result screen appears: result
+  bytes and falls as last seen on the match screen, finish from the flags,
+  no winner = draw.

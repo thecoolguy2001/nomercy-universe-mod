@@ -4,7 +4,9 @@ This is the agreed plan. Follow it exactly; ask before changing anything in it.
 
 ## Matches = format + stipulation
 - Formats: Single, Tag, Triple Threat, Handicap (2 on 1).
-- Stipulations: Normal, Cage, Ladder, Ironman, Guest Referee.
+- Stipulations: Normal, Cage, Ladder, Ironman, Guest Referee, No DQ
+  (added 2026-11-22: Exhibition with the RULES changed - no count-outs,
+  no disqualifications).
 - Any combination the game supports (check each mode's allowed formats while
   reverse-engineering; only book supported combinations; report the list to
   the user).
@@ -17,6 +19,12 @@ This is the agreed plan. Follow it exactly; ask before changing anything in it.
 - Play / Watch for every type, same feel as singles now: straight to
   character select with cursors on the right wrestlers, B backs out to
   Universe, Exit returns to Universe, Rematch replaces the result.
+  Guest Referee: Play only, the player is the referee (the game has no CPU
+  referee); no Watch (user, 2026-11-22).
+- Match rules (user, 2026-11-22): every match has Count Out 10 counts and
+  DQ on; only No DQ matches have no count-out and no DQ. Ironman matches
+  are 30 minutes. The player's own Exhibition / Multi Play rules are left
+  as they were.
 
 ## Booking rules
 - Weekly Raw and SmackDown: mostly Single and Tag, sometimes Triple Threat,

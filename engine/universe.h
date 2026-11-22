@@ -50,6 +50,7 @@ enum {
     U_STIP_LADDER,
     U_STIP_IRONMAN,
     U_STIP_REFEREE,         /* guest referee: UMatch.referee */
+    U_STIP_NODQ,            /* no count-outs, no disqualifications */
     U_STIP_COUNT
 };
 
@@ -60,6 +61,8 @@ enum {
     U_WIN_DQ,
     U_WIN_SPECIAL,      /* escaped the cage / climbed the ladder */
     U_WIN_FALLS,        /* Ironman: most falls (UMatch.falls) */
+    U_WIN_DRAW,         /* no winner (UMatch.winner = U_NONE): time limit,
+                           double count-out, Ironman level on falls */
     U_WIN_METHOD_COUNT
 };
 
@@ -122,10 +125,10 @@ typedef struct {
     uint8_t rivalry;        /* rivalry index or U_NONE */
     /* result (filled by u_sim_match or u_set_result) */
     uint8_t done;
-    uint8_t winner;         /* winning side: 0..u_match_sides()-1 */
+    uint8_t winner;         /* winning side: 0..u_match_sides()-1, U_NONE for a draw */
     uint8_t method;
     uint8_t source;
-    uint8_t falls[2];       /* Ironman: falls scored by side 0 and side 1 */
+    uint8_t falls[3];       /* Ironman: falls scored by each side */
     /* consequences (filled by u_apply_show, for display) */
     uint8_t title_changed;
     uint8_t rivalry_started;
@@ -198,12 +201,17 @@ int     u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int
 int     u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int cap);
 const char *u_method_name(uint8_t method, uint8_t stip);
 int     u_method_allowed(uint8_t stip, uint8_t method);
+/* Format + stipulation combinations No Mercy can stage (notes/universe-plan.md):
+ * Cage is 1 on 1 only, Guest Referee is never a tag match. */
+int     u_stip_supported(uint8_t format, uint8_t stip);
 
 /* ---- show loop: book -> (play or sim each match) -> apply ---- */
 void    u_book_show(Universe *u, UShow *s);
 void    u_sim_match(Universe *u, UMatch *m);
 int     u_set_result(UMatch *m, uint8_t winning_side, uint8_t method);
-int     u_set_ironman_result(UMatch *m, uint8_t falls0, uint8_t falls1);
+int     u_set_draw(UMatch *m);
+/* falls[k] for each of the u_match_sides() sides; level at the top = draw */
+int     u_set_ironman_result(UMatch *m, const uint8_t *falls);
 void    u_apply_show(Universe *u, UShow *s);
 
 /* ---- persistence: bytes written / 0 on success, negative on error ---- */

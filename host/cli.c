@@ -132,15 +132,16 @@ static int ask_result(const Universe *u, UMatch *m)
     uint8_t allowed[U_WIN_METHOD_COUNT];
     int na = 0, i;
     for (i = 0; i < U_WIN_METHOD_COUNT; i++)
-        if (u_method_allowed(m->stip, (uint8_t)i)) allowed[na++] = (uint8_t)i;
+        if (i != U_WIN_DRAW && u_method_allowed(m->stip, (uint8_t)i)) allowed[na++] = (uint8_t)i;
     int sides = u_match_sides(m);
     if (m->stip == U_STIP_IRONMAN) return 0;   /* simulated (falls) */
     for (;;) {
         printf("     Winner? 1 = %s, 2 = %s", side_name(u, m, 0), side_name(u, m, 1));
         if (sides == 3) printf(", 3 = %s", side_name(u, m, 2));
-        printf(", Enter = simulate: ");
+        printf(", d = draw, Enter = simulate: ");
         fflush(stdout);
         if (!fgets(line, sizeof line, stdin) || line[0] == '\n') return 0;
+        if (line[0] == 'd') return u_set_draw(m) == 0;
         if (line[0] >= '1' && line[0] < '1' + sides) {
             int pick = 0;
             if (na > 1) {
@@ -180,8 +181,14 @@ static void run_show(Universe *u, int play)
         {
             char text[128];
             u_match_text(u, m, 1, text, sizeof text);
-            printf("  %s by %s", text, u_method_name(m->method, m->stip));
-            if (m->method == U_WIN_FALLS) printf(" (%u-%u)", m->falls[m->winner], m->falls[1 - m->winner]);
+            if (m->method == U_WIN_DRAW) printf("  %s", text);
+            else printf("  %s by %s", text, u_method_name(m->method, m->stip));
+            if (m->stip == U_STIP_IRONMAN) {
+                int k;
+                printf(" (falls");
+                for (k = 0; k < u_match_sides(m); k++) printf(" %u", m->falls[k]);
+                printf(")");
+            }
             printf("%s\n", m->source == U_SRC_PLAYED ? "  (played)" : "");
         }
     }

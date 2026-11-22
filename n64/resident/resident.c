@@ -11,6 +11,7 @@
  */
 #include "resident.h"
 #include "uscreen.h"
+#include "../../engine/universe.h"
 
 #define PIF_RAM   ((const volatile uint8_t *)0x800A0200u) /* __osContPifRam */
 #define MAX_CONT  (*(const volatile uint8_t *)0x800A2614u) /* __osMaxControllers */
@@ -28,6 +29,9 @@
 #define CLOCK_MIN      0x8015AB18u
 #define CLOCK_SEC      0x8015AB1Cu
 #define RESULT(slot)   (0x8015AF45u + 0x358u * (slot))  /* per slot: 0 in the match, 4 = won */
+#define FALLS(slot)    (0x8015A73Bu + 4u * (slot))      /* Ironman falls scored (low byte of a u32) */
+/* Both are only valid on the match screen: the result screen reuses them. */
+#define FINISH_FLAGS   0x800A261Cu   /* u32 set at the bell, kept for the result screen */
 
 /* Buttons (OSContPad.button) */
 #define B_A      0x8000
@@ -86,7 +90,6 @@ static int universe_highlighted(void);
 
 #define UNIVERSE_ITEM_MODE  0x8040903Fu  /* byte 19 of the 3rd Single Play item */
 #define MODE_SURVIVAL       0x03
-#define MODE_EXHIBITION     0x02
 #define B_R      0x0010
 #define B_L      0x0020
 #define B_Z      0x2000
@@ -94,15 +97,23 @@ static int universe_highlighted(void);
 #define B_DRIGHT 0x0100
 
 /* Exhibition settings (menu overlay data) */
-#define EX_MATCH_CURSOR   0x8015A0EDu    /* MATCH tab: 0 = Single Match */
+#define EX_MATCH_CURSOR   0x8015A0EDu    /* MATCH tab item (USetup.match_item) */
 /* PLAYER tab choice: a position in the type's full list (greyed-out
- * multiplayer entries included). Per MATCH item: 1P on side 1 (with a CPU
- * partner in Tag / Handicap), and Watch. */
+ * multiplayer entries included); USetup.player */
 #define EX_PLAYER         0x80159FB5u
-static const uint8_t PLAYER_1P[5]    = { 1, 5, 3, 3, 1 };
-static const uint8_t PLAYER_WATCH[5] = { 3, 7, 6, 5, 3 };
-#define EX_TAG_ITEM       1               /* MATCH tab items (USetup.match_item) */
-#define EX_HANDICAP_ITEM  3
+/* RULES: the tab's live row (filled from the match type's saved rules when
+ * the tab opens, which Universe never does) and the match's rules. A on the
+ * loading screen first turns the match's rules into the match settings
+ * (0x80137414: flags 0x800AAE80, time limit 0x800A139C ...), then commits:
+ * the live row is copied to the match's rules and packed into the save data
+ * as the player's rules for that match type (call at 0x8013576C), which the
+ * game soon writes to the cartridge. Universe writes both rows, keeps that
+ * call out while it runs a match, and puts the player's rows back after. */
+#define LIVE_RULES        0x800931D8u
+#define MATCH_RULES       0x800AB574u
+#define SAVE_RULES_CALL   0x8013576Cu    /* menu overlay: jal 0x800E4A98 */
+#define SAVE_RULES_JAL    0x0C0392A6u
+#define SAVE_RULES_BEFORE 0x24040004u    /* addiu a0, zero, 4 (the call's last slot choice) */
 /* ARENA tab choice (0 Raw is War .. 9 Armageddon, see us_show_arena): the
  * tab's own bytes and the copy the match loader uses */
 static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x800AA99Fu };
@@ -130,8 +141,10 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 #define SS_PAGES          0x80047150u    /* [page][12] wrestler numbers, 9 cells used */
 #define SS_SUPERSTAR_PAGES 5
 
-static uint8_t dstate, dwatch, seen_zero, seen_result, dresults, dlast_screen;
+static uint8_t dstate, dwatch, seen_result, dresults, dlast_screen;
 static USetup  dsetup;                 /* the match being staged */
+static UGameResult dlast;              /* its latest result values, read while it is on screen */
+static uint8_t dlast_valid, dseen_zero;
 static uint8_t dsaved_champion[2], darena;
 static uint32_t dt0, dnext;
 static uint32_t hold_until;
@@ -196,7 +209,7 @@ static void move_partner_cursor(uint8_t screen)
     unsigned p, c, cur;
     if (filled != dfilled) {
         dfilled = (uint8_t)filled;
-        dmove = dsetup.match_item == EX_TAG_ITEM && (filled == 1 || filled == 3);
+        dmove = dsetup.tag && (filled == 1 || filled == 3);
         dnext = frames + 30;                   /* let the confirm settle */
     }
     if (!dmove || frames < dnext) return;
@@ -260,7 +273,58 @@ void ss_picker_init(int picker)
 
 static void set_player_mode(void)
 {
-    RAM8(EX_PLAYER) = (dwatch ? PLAYER_WATCH : PLAYER_1P)[dsetup.match_item];
+    RAM8(EX_PLAYER) = dsetup.player;
+}
+
+/* The player's own rules, kept while Universe uses the game's */
+static uint8_t keep_live[US_RULES], keep_match[US_RULES], rules_kept;
+
+static void keep_rules(void)
+{
+    unsigned i;
+    if (rules_kept) return;                /* still Universe's: keep the player's */
+    for (i = 0; i < US_RULES; i++) {
+        keep_live[i] = RAM8(LIVE_RULES + i);
+        keep_match[i] = RAM8(MATCH_RULES + i);
+    }
+    rules_kept = 1;
+}
+
+static void restore_rules(void)
+{
+    unsigned i;
+    if (!rules_kept) return;
+    for (i = 0; i < US_RULES; i++) {
+        RAM8(LIVE_RULES + i) = keep_live[i];
+        RAM8(MATCH_RULES + i) = keep_match[i];
+    }
+    rules_kept = 0;
+}
+
+/* The commit's save call is a nop while the director runs a match (only
+ * patched when the menu overlay is there; the words around it are checked) */
+static void save_rules_hook(int off)
+{
+    if (RAM32(SAVE_RULES_CALL - 4) != SAVE_RULES_BEFORE || RAM32(SAVE_RULES_CALL + 4) != 0)
+        return;
+    if (off && RAM32(SAVE_RULES_CALL) == SAVE_RULES_JAL) {
+        RAM32(SAVE_RULES_CALL) = 0;
+        sync_code(SAVE_RULES_CALL);
+    } else if (!off && RAM32(SAVE_RULES_CALL) == 0) {
+        RAM32(SAVE_RULES_CALL) = SAVE_RULES_JAL;
+        sync_code(SAVE_RULES_CALL);
+    }
+}
+
+static void set_rules(void)
+{
+    unsigned i;
+    for (i = 0; i < US_RULES; i++) {
+        uint8_t v = dsetup.rules[i];
+        if (i == 1 && MAILBOX->test_time) v = (uint8_t)(MAILBOX->test_time - 1);
+        RAM8(LIVE_RULES + i) = v;
+        RAM8(MATCH_RULES + i) = v;
+    }
 }
 
 /* The show's arena */
@@ -275,10 +339,11 @@ static void set_arena(void)
 static void set_controllers(void)
 {
     /* 1P vs CPU: the game marks the player's side (slot 0, and slot 1 too
-     * when it is slot 0's partner: Tag and Handicap); Watch: all CPU */
-    int i, pair = dsetup.match_item == EX_TAG_ITEM || dsetup.match_item == EX_HANDICAP_ITEM;
+     * when it is slot 0's partner: Tag and Handicap); a guest referee
+     * (slot 0) is the player; Watch: all CPU */
+    int i;
     for (i = 0; i < 4; i++)
-        RAM8(SETUP_SLOT(i) + 3) = !dwatch && (i == 0 || (i == 1 && pair)) ? SLOT_HUMAN : SLOT_CPU;
+        RAM8(SETUP_SLOT(i) + 3) = dsetup.human[i] ? SLOT_HUMAN : SLOT_CPU;
 }
 
 /* The title on the line (the menu's BELT tab is greyed out on a fresh save) */
@@ -299,13 +364,15 @@ static void director_start(int watch)
         dsaved_champion[1] = RAM8(CHAMPION(dsetup.belt) + 1);
     }
     dwatch = (uint8_t)watch;
+    keep_rules();
+    dlast_valid = 0;
+    dseen_zero = 0;
     dlast_screen = 0xFF;
     dfilled = 0;
     dmove = 0;
     darena = (uint8_t)us_show_arena();
-    seen_zero = 0;
     preset_cursor(dsetup.wrestler[0]);
-    RAM8(UNIVERSE_ITEM_MODE) = MODE_EXHIBITION;
+    RAM8(UNIVERSE_ITEM_MODE) = dsetup.mode;      /* Exhibition, Ladder, Ironman, ... */
     us_cover(1);
     press(B_A);
     dt0 = frames;
@@ -320,6 +387,7 @@ static void director_end_match(void)
         RAM8(CHAMPION(dsetup.belt) + 1) = dsaved_champion[1];
     }
     RAM32(SETUP_BELT) = 0xFFFFFFFFu;
+    restore_rules();
     us_match_closed();
 }
 
@@ -329,6 +397,29 @@ static void actual_wrestlers(uint8_t n[4])
     int s;
     for (s = 0; s < 4; s++)
         n[s] = s < dsetup.n_slots ? game_number(*(volatile uint16_t *)SETUP_SLOT(s)) : 0;
+}
+
+/* How the match ended, from the finish flags the result screen shows
+ * (0x8010B3F8 turns them into its caption: 0x2000 Submit, 0x4000 Pin,
+ * 0x8000 Draw, 0x10000 TKO, 0x20000 DQ, 0x80000-0x400000 Count out; the
+ * ladder / cage finishes have no caption) */
+static uint8_t game_method(uint32_t f)
+{
+    if (f & 0x2000u) return U_WIN_SUBMISSION;
+    if (f & 0x4000u) return U_WIN_PINFALL;
+    if (f & 0x8000u) return U_WIN_DRAW;
+    if (f & 0x10000u) return U_WIN_SUBMISSION;      /* TKO (off in Universe) */
+    if (f & 0x20000u) return U_WIN_DQ;
+    if (f & 0x780000u) return U_WIN_COUNTOUT;
+    return U_WIN_SPECIAL;                           /* the rest: ladder, cage */
+}
+
+static int dlast_won(void)
+{
+    int i;
+    for (i = 0; i < 4; i++)
+        if (dlast.result[i] == 4) return 1;
+    return 0;
 }
 
 /* Backing out of Superstar Select (B) would go to Exhibition's MATCH tab:
@@ -364,6 +455,7 @@ static void director_tick(void)
                 set_player_mode();                     /* Watch or 1P vs CPU */
                 set_controllers();
                 set_arena();
+                set_rules();
             }
             if (screen != dlast_screen) dnext = frames + 6;  /* let the tab settle first */
             if (frames >= dnext) {
@@ -379,6 +471,7 @@ static void director_tick(void)
         } else if (t > 900) {
             us_cover(0);
             RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;
+            restore_rules();
             dstate = D_FAIL;
         }
         break;
@@ -388,6 +481,7 @@ static void director_tick(void)
          * Superstar Select, so it still counts as picking). */
         set_player_mode();
         set_arena();
+        set_rules();
         write_belt();
         if (backed_out()) break;
         move_partner_cursor(screen);
@@ -402,21 +496,37 @@ static void director_tick(void)
         break;
     case D_INTRO:           /* entrances, match, replays: all hands off */
     case D_MATCH: {
-        uint8_t r[4];
-        int i, zero = 1, won = 0;
+        int i;
         if (backed_out()) break;
-        for (i = 0; i < 4; i++) {
-            r[i] = i < dsetup.n_slots ? RAM8(RESULT(i)) : 0;
-            if (r[i]) zero = 0;
-            if (r[i] == 4) won = 1;
+        if (screen == SCREEN_MATCH && !(dlast_valid && dseen_zero && dlast_won())) {
+            /* the per-slot values, kept from the bell on (a 4 after the
+             * match started at 0): the game clears them a few seconds later
+             * and the result screen reuses them; falls only ever go up */
+            int zero = 1;
+            for (i = 0; i < 4; i++) {
+                uint8_t f = i < dsetup.n_slots ? RAM8(FALLS(i)) : 0;
+                dlast.result[i] = i < dsetup.n_slots ? RAM8(RESULT(i)) : 0;
+                if (dlast.result[i]) zero = 0;
+                if (!dseen_zero || f > dlast.falls[i]) dlast.falls[i] = f;
+            }
+            if (zero) dseen_zero = 1;
+            dlast_valid = 1;
         }
-        if (zero) seen_zero = 1;
-        if (seen_zero && won) {
-            uint8_t n[4];
-            actual_wrestlers(n);
-            us_match_result(r, n);
-            seen_result = 0;
-            dresults++;
+        /* The result is recorded when the result screen comes up: the
+         * winner (4) from the match, how it ended from the finish flags
+         * (0 until the match ends); no winner is a draw (time limit, double
+         * count-out, Ironman level on falls) */
+        if (screen == SCREEN_RESULT && dlast_valid) {
+            uint32_t f = RAM32(FINISH_FLAGS);
+            int won = dseen_zero && dlast_won();
+            if (won || f) {
+                dlast.method = won ? game_method(f) : U_WIN_DRAW;
+                if (!won) for (i = 0; i < 4; i++) dlast.result[i] = 0;
+                actual_wrestlers(dlast.game_n);
+                us_match_result(&dlast);
+                dresults++;
+            }
+            dlast_valid = 0;
             dstate = D_RETURN;
             dt0 = frames;
         } else if (dstate == D_INTRO && t > 2800) {
@@ -432,7 +542,8 @@ static void director_tick(void)
          * is, and the Universe screen is shown as soon as the menu is up. */
         if (screen == SCREEN_RESULT) seen_result = 1;
         if (seen_result && (screen == SCREEN_LOADING || screen == SCREEN_MATCH)) {
-            seen_zero = 0;                             /* Rematch */
+            dlast_valid = 0;                           /* Rematch */
+            dseen_zero = 0;
             dt0 = frames;
             dstate = D_INTRO;
             break;
@@ -508,6 +619,7 @@ static void enter_universe(void)
 {
     volatile Mailbox *mb = MAILBOX;
     universe_mode = 1;
+    us_test_stip(mb->test_stip);
     us_enter(mb->test_seed ? mb->test_seed : cp0_count());
 }
 
@@ -587,6 +699,7 @@ static void universe_frame(OSContPad *pads)
 
     director_tick();
     picker_hook(dstate == D_ROUTE || dstate == D_SELECT);
+    save_rules_hook(dstate >= D_ROUTE && dstate <= D_RETURN);
     mb->state = dstate;
     mb->step = dresults;                  /* match results recorded (debug) */
     if (dstate == D_ROUTE || dstate == D_STEER || dmove)
