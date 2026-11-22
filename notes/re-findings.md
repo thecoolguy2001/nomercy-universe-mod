@@ -424,7 +424,8 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   screen calls 0x8010B3F8(flags) -> u32 0x801597C0 = caption + 1; caption
   text id 0xF1AF + value through 0x800DEC70 (ids 0xF0CE.. -> pointer table
   0x800B8458): table 0x800F4B18 = Draw, Submit, Pin, Draw, TKO, Count out
-  x5, TKO, "", DQ, "", "". Seen: pin 0x4412, time-limit draw 0x9400.
+  x5, TKO, "", DQ, "", "". Seen: pin 0x4412, time-limit draw 0x9400,
+  ladder climbed 0x40412 (bit 0x40000).
 - Match record 0x800A99F0 + 12 * (s16 0x800A9CB4 - 1): u16 minutes, u16
   seconds, ..., u16 flags at +10 (same value as 0x800A261C).
 - Universe records every match when the result screen appears: result
