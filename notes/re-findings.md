@@ -335,3 +335,25 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   boot loader DMAs them to 0x80480000; the cover draws the show's arena.
 - Display list buffers 0x80389880 / 0x8038C7F0 (0x2F70 bytes each); menus
   use < 2 KB.
+
+## Exhibition match types (plan step 1, 2026-11-22)
+- MATCH tab items: 0 Single, 1 Tag, 2 Triple Threat, 3 Handicap, 4 Cage
+  (Cage = 1 on 1). A on the tab commits: copies 0x80159654 / 0x8015971A /
+  0x80159798, u32 0x800AAAAC = 1 << item, u16 0x800AAAB2 = wrestlers to pick
+  (2/4/3/3/2), and resets the PLAYER choice (START from the MATCH tab then
+  does nothing for a changed type). The director highlights the item, presses
+  A, sets the PLAYER value on the PLAYER tab (screen 06) and presses START.
+- PLAYER value 0x80159FB5 = position in the type's full list (greyed
+  multiplayer entries included). 1P / Watch: Single 1/3, Tag 5/7, Triple
+  3/6, Handicap 3/5, Cage 1/3. Slot +3 before picks: 1 for the player's
+  wrestler (and the CPU partner in Tag / Handicap 1P), else 0.
+- Slots in pick order: Tag 0-1 vs 2-3; Triple one each; Handicap the pair
+  (0-1) vs the lone wrestler (2). Pickers 26 / 27 (screens 1A / 1B) take
+  turns; Tag partners are picked by the same picker back to back with no
+  picker init (0x801124D0 only runs when the other picker starts), so the
+  director moves the cursor for the partner (R/L to the page via u16
+  0x800AAAB6, then picker cell +4 at 0x8015B810 / 0x8015B948).
+- Results per slot 0x8015AF45 + 0x358*slot: 4 = won (both members of a
+  winning team), 3 / 1 = lost, 0 = not involved in the finish (triple).
+- Tag belt: SETUP_BELT 1 + champion bytes +2 / +3 (0x800A53E2 + 0x34) shows
+  the "Tag Team Championship" intro.

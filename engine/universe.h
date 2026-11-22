@@ -34,14 +34,22 @@ enum { U_BRAND_RAW = 0, U_BRAND_SMACKDOWN = 1, U_BRAND_COUNT = 2 };
 enum { U_FACE = 0, U_HEEL = 1 };
 enum { U_SHOW_WEEKLY = 0, U_SHOW_PPV = 1 };
 enum { U_TITLE_SINGLES = 0, U_TITLE_TAG = 1 };
-enum { U_MT_SINGLES = 0, U_MT_TAG = 1 };
+/* A match is a format plus a stipulation (notes/universe-plan.md). */
+enum {
+    U_FMT_SINGLE = 0,       /* 1 vs 1 */
+    U_FMT_TAG,              /* 2 vs 2 (teams) */
+    U_FMT_TRIPLE,           /* 1 vs 1 vs 1 */
+    U_FMT_HANDICAP,         /* 1 (side 0) vs 2 (side 1) */
+    U_FMT_COUNT
+};
 
 /* Stipulations map onto match types No Mercy already has. */
 enum {
     U_STIP_NORMAL = 0,
-    U_STIP_NO_DQ,
     U_STIP_CAGE,
     U_STIP_LADDER,
+    U_STIP_IRONMAN,
+    U_STIP_REFEREE,         /* guest referee: UMatch.referee */
     U_STIP_COUNT
 };
 
@@ -51,6 +59,7 @@ enum {
     U_WIN_COUNTOUT,
     U_WIN_DQ,
     U_WIN_SPECIAL,      /* escaped the cage / climbed the ladder */
+    U_WIN_FALLS,        /* Ironman: most falls (UMatch.falls) */
     U_WIN_METHOD_COUNT
 };
 
@@ -102,17 +111,21 @@ typedef struct {
 
 typedef struct {
     /* booking (filled by u_book_show) */
-    uint8_t type;           /* U_MT_SINGLES / U_MT_TAG */
-    uint8_t stip;
-    uint8_t side[2][2];     /* wrestler ids; side[x][1] = U_NONE in singles */
-    uint8_t team[2];        /* team ids in tag matches, else U_NONE */
+    uint8_t format;         /* U_FMT_* */
+    uint8_t stip;           /* U_STIP_* */
+    uint8_t side[3][2];     /* wrestler ids, U_NONE where unused: single and
+                               triple use side[x][0]; tag both of each side;
+                               handicap side 0 alone, side 1 two wrestlers */
+    uint8_t team[3];        /* team ids in tag matches, else U_NONE */
+    uint8_t referee;        /* guest referee (U_STIP_REFEREE), else U_NONE */
     uint8_t title;          /* title index or U_NONE */
     uint8_t rivalry;        /* rivalry index or U_NONE */
     /* result (filled by u_sim_match or u_set_result) */
     uint8_t done;
-    uint8_t winner;         /* winning side: 0 or 1 */
+    uint8_t winner;         /* winning side: 0..u_match_sides()-1 */
     uint8_t method;
     uint8_t source;
+    uint8_t falls[2];       /* Ironman: falls scored by side 0 and side 1 */
     /* consequences (filled by u_apply_show, for display) */
     uint8_t title_changed;
     uint8_t rivalry_started;
@@ -176,6 +189,13 @@ uint32_t u_rand(Universe *u, uint32_t n);
 void    u_next_show(const Universe *u, uint8_t *kind, uint8_t *brand);
 const char *u_show_name(const Universe *u);  /* "Raw Is War", "WrestleMania"... */
 const char *u_stip_name(uint8_t stip);
+const char *u_format_name(uint8_t format);
+int     u_match_sides(const UMatch *m);      /* 3 for a triple threat, else 2 */
+/* Text for a side ("Rock", "Edge & Christian", "Kane & X-Pac"), and for a
+ * whole match: "A vs B vs C", or with winner set "A def. B & C". Always
+ * zero-terminated within cap; returns the length. */
+int     u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap);
+int     u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int cap);
 const char *u_method_name(uint8_t method, uint8_t stip);
 int     u_method_allowed(uint8_t stip, uint8_t method);
 
@@ -183,6 +203,7 @@ int     u_method_allowed(uint8_t stip, uint8_t method);
 void    u_book_show(Universe *u, UShow *s);
 void    u_sim_match(Universe *u, UMatch *m);
 int     u_set_result(UMatch *m, uint8_t winning_side, uint8_t method);
+int     u_set_ironman_result(UMatch *m, uint8_t falls0, uint8_t falls1);
 void    u_apply_show(Universe *u, UShow *s);
 
 /* ---- persistence: bytes written / 0 on success, negative on error ---- */

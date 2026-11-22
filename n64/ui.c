@@ -73,14 +73,15 @@ static int show_valid(const UShow *s, const Universe *u)
     if (s->count > U_MAX_MATCHES) return 0;
     for (i = 0; i < s->count; i++) {
         const UMatch *m = &s->m[i];
-        for (k = 0; k < 4; k++) {
+        if (m->format >= U_FMT_COUNT) return 0;
+        for (k = 0; k < 6; k++) {
             uint8_t id = m->side[k / 2][k % 2];
             if (id != U_NONE && id >= u->n_wrestlers) return 0;
         }
-        if (m->type == U_MT_TAG &&
+        if (m->format == U_FMT_TAG &&
             (m->team[0] >= u->n_teams || m->team[1] >= u->n_teams)) return 0;
         if (m->title != U_NONE && m->title >= u->n_titles) return 0;
-        if (m->stip >= U_STIP_COUNT || (m->done && m->winner > 1)) return 0;
+        if (m->stip >= U_STIP_COUNT || (m->done && m->winner >= u_match_sides(m))) return 0;
     }
     return 1;
 }
@@ -140,7 +141,11 @@ static void text(int col, int row, const char *s, uint16_t c) { draw_text(col, r
 
 static const char *side_name(const UMatch *m, int side)
 {
-    return m->type == U_MT_TAG ? U.tm[m->team[side]].name : U.w[m->side[side][0]].name;
+    static char buf[4][2 * U_NAME_LEN + 4];
+    static int next;
+    char *b = buf[next++ & 3];
+    u_side_text(&U, m, side, b, sizeof buf[0]);
+    return b;
 }
 
 static const char *holder_name(uint8_t title, uint8_t h)
@@ -271,7 +276,7 @@ static void draw_play(void)
     text(2, 7, l.b, C_HI);
     ln_reset(&l);
     ln_str(&l, "EXHIBITION > ");
-    ln_str(&l, m->type == U_MT_TAG ? "TAG TEAM" : "SINGLES");
+    ln_str(&l, u_format_name(m->format));
     if (m->stip != U_STIP_NORMAL) { ln_str(&l, " > "); ln_str(&l, u_stip_name(m->stip)); }
     text(2, 10, l.b, C_TEXT);
     if (m->title != U_NONE) {
@@ -479,7 +484,7 @@ static void finish_show(void)
         if (m->rivalry_started)
             add_headline("NEW RIVALRY: ", side_name(m, 0), " VS ", side_name(m, 1));
         if (m->rivalry_ended)
-            add_headline(side_name(m, m->winner), " ENDS FEUD W/ ", side_name(m, 1 - m->winner), "");
+            add_headline(side_name(m, m->winner), " ENDS FEUD W/ ", side_name(m, m->winner ? 0 : 1), "");
         if (m->injured != U_NONE)
             add_headline("INJURED: ", U.w[m->injured].name, "", "");
     }

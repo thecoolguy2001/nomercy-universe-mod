@@ -27,8 +27,7 @@
 #define SS_CURSOR_CPU2 0x80045849u
 #define CLOCK_MIN      0x8015AB18u
 #define CLOCK_SEC      0x8015AB1Cu
-#define RESULT_SIDE1   0x8015AF45u  /* 4 = won */
-#define RESULT_SIDE2   0x8015B29Du
+#define RESULT(slot)   (0x8015AF45u + 0x358u * (slot))  /* per slot: 0 in the match, 4 = won */
 
 /* Buttons (OSContPad.button) */
 #define B_A      0x8000
@@ -96,9 +95,14 @@ static int universe_highlighted(void);
 
 /* Exhibition settings (menu overlay data) */
 #define EX_MATCH_CURSOR   0x8015A0EDu    /* MATCH tab: 0 = Single Match */
-static const uint32_t EX_PLAYER[] = { 0x8015971Cu, 0x80159655u, 0x80159FB5u };
-#define PLAYER_1P_VS_CPU  1               /* PLAYER tab: 1 1P vs CPU, 2 CPU vs 1P, 3 Watch */
-#define PLAYER_WATCH      3
+/* PLAYER tab choice: a position in the type's full list (greyed-out
+ * multiplayer entries included). Per MATCH item: 1P on side 1 (with a CPU
+ * partner in Tag / Handicap), and Watch. */
+#define EX_PLAYER         0x80159FB5u
+static const uint8_t PLAYER_1P[5]    = { 1, 5, 3, 3, 1 };
+static const uint8_t PLAYER_WATCH[5] = { 3, 7, 6, 5, 3 };
+#define EX_TAG_ITEM       1               /* MATCH tab items (USetup.match_item) */
+#define EX_HANDICAP_ITEM  3
 /* ARENA tab choice (0 Raw is War .. 9 Armageddon, see us_show_arena): the
  * tab's own bytes and the copy the match loader uses */
 static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x800AA99Fu };
@@ -107,13 +111,15 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 #define SLOT_HUMAN        1              /* slot +3 before Superstar Select: controller */
 #define SLOT_CPU          0
 #define SETUP_BELT        0x800AB5B4u    /* s32 belt on the line, -1 = none */
-#define CHAMPION(b)       (0x800A53E2u + 0x34u * (b)) /* wrestler number of the champion */
+#define CHAMPION(b)       (0x800A53E2u + 0x34u * (b)) /* wrestler number of the champion (+1: tag partner) */
 #define GAME_SCREEN       0x80045845u    /* screen being shown (low byte of a u16) */
 #define SCREEN_MULTI_PLAY   0x02
 #define SCREEN_SINGLE_PLAY  0x03
 #define SCREEN_EX_MATCH     0x07         /* Exhibition MATCH tab */
+#define SCREEN_EX_PLAYER    0x06         /* Exhibition PLAYER tab */
 #define SCREEN_LOADING      0x19         /* "Single Match / A VS B" loading screen */
-#define SCREEN_SELECT       0x1A         /* Superstar Select */
+#define SCREEN_SELECT       0x1A         /* Superstar Select (picker 26) */
+#define SCREEN_SELECT_2     0x1B         /* Superstar Select, picker 27 */
 #define SCREEN_RESULT       0x1D
 #define SCREEN_MATCH        0x2A
 #define NEXT_SCREEN       0x801596C0u    /* u16 screen the loading transition goes to */
@@ -124,9 +130,9 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 #define SS_PAGES          0x80047150u    /* [page][12] wrestler numbers, 9 cells used */
 #define SS_SUPERSTAR_PAGES 5
 
-static uint8_t dstate, dwatch, seen_zero, seen_result, dresults;
-static uint8_t dwrestler[2], dchampion, dsaved_champion, darena;
-static int     dbelt;
+static uint8_t dstate, dwatch, seen_zero, seen_result, dresults, dlast_screen;
+static USetup  dsetup;                 /* the match being staged */
+static uint8_t dsaved_champion[2], darena;
 static uint32_t dt0, dnext;
 static uint32_t hold_until;
 static uint16_t hold_buttons;
@@ -150,16 +156,63 @@ static uint8_t game_number(uint16_t id)   /* the reverse; 0 = unknown */
 }
 
 /* Superstar Select opens on the page and cell of wrestler n */
-static void preset_cursor(uint8_t n)
+static int find_cell(uint8_t n, unsigned *page, unsigned *cell)
 {
     unsigned p, c;
     for (p = 0; p < SS_SUPERSTAR_PAGES; p++)
         for (c = 0; c < 9; c++)
             if (RAM8(SS_PAGES + 12u * p + c) == n) {
-                *(volatile uint16_t *)SS_SAVED_PAGE = (uint16_t)p;
-                *(volatile uint16_t *)SS_SAVED_CELL = (uint16_t)c;
-                return;
+                *page = p;
+                *cell = c;
+                return 1;
             }
+    return 0;
+}
+
+static void preset_cursor(uint8_t n)
+{
+    unsigned p, c;
+    if (!find_cell(n, &p, &c)) return;
+    RAM16(SS_SAVED_PAGE) = (uint16_t)p;
+    RAM16(SS_SAVED_CELL) = (uint16_t)c;
+}
+
+/* Tag partners are picked by the same picker straight after each other
+ * (no new picker init): the cursor is moved there - R / L to the page,
+ * then the picker's cell. Pickers: 26 while screen 1A, 27 while 1B. */
+#define PICKER_OBJ(screen) ((screen) == SCREEN_SELECT ? 0x8015B810u : 0x8015B948u)
+static uint8_t dfilled, dmove;
+
+static int slots_filled(void)
+{
+    int i = 0;
+    while (i < dsetup.n_slots && RAM8(SETUP_SLOT(i)) != 0xFF) i++;
+    return i;
+}
+
+static void move_partner_cursor(uint8_t screen)
+{
+    int filled = slots_filled();
+    unsigned p, c, cur;
+    if (filled != dfilled) {
+        dfilled = (uint8_t)filled;
+        dmove = dsetup.match_item == EX_TAG_ITEM && (filled == 1 || filled == 3);
+        dnext = frames + 30;                   /* let the confirm settle */
+    }
+    if (!dmove || frames < dnext) return;
+    if ((screen != SCREEN_SELECT && screen != SCREEN_SELECT_2) ||
+        !find_cell(dsetup.wrestler[filled], &p, &c)) {
+        dmove = 0;
+        return;
+    }
+    cur = RAM16(SS_SAVED_PAGE);
+    if (cur != p) {
+        press(cur < p ? B_R : B_L);
+        dnext = frames + 24;                   /* the page slides in */
+        return;
+    }
+    RAM16(PICKER_OBJ(screen) + 4) = (uint16_t)c;
+    dmove = 0;
 }
 
 /* Superstar Select's picker init (menu overlay, in RAM only while the menus
@@ -196,16 +249,18 @@ static void picker_hook(int on)
 
 void ss_picker_init(int picker)
 {
-    int side = picker - PICKER_SIDE1;
-    if ((dstate == D_ROUTE || dstate == D_SELECT) && (side == 0 || side == 1))
-        preset_cursor(dwrestler[side]);
+    /* The two pickers (26 and 27) take turns; the slot being picked is the
+     * first one not confirmed yet */
+    int slot = 0;
+    if (picker != PICKER_SIDE1 && picker != PICKER_SIDE1 + 1) return;
+    while (slot < dsetup.n_slots && RAM8(SETUP_SLOT(slot)) != 0xFF) slot++;
+    if ((dstate == D_ROUTE || dstate == D_SELECT) && slot < dsetup.n_slots)
+        preset_cursor(dsetup.wrestler[slot]);
 }
 
 static void set_player_mode(void)
 {
-    unsigned i;
-    for (i = 0; i < sizeof EX_PLAYER / sizeof EX_PLAYER[0]; i++)
-        RAM8(EX_PLAYER[i]) = dwatch ? PLAYER_WATCH : PLAYER_1P_VS_CPU;
+    RAM8(EX_PLAYER) = (dwatch ? PLAYER_WATCH : PLAYER_1P)[dsetup.match_item];
 }
 
 /* The show's arena */
@@ -219,25 +274,37 @@ static void set_arena(void)
  * (only valid before the picks: the byte means something else afterwards) */
 static void set_controllers(void)
 {
-    RAM8(SETUP_SLOT(0) + 3) = dwatch ? SLOT_CPU : SLOT_HUMAN;
-    RAM8(SETUP_SLOT(1) + 3) = SLOT_CPU;
+    /* 1P vs CPU: the game marks the player's side (slot 0, and slot 1 too
+     * when it is slot 0's partner: Tag and Handicap); Watch: all CPU */
+    int i, pair = dsetup.match_item == EX_TAG_ITEM || dsetup.match_item == EX_HANDICAP_ITEM;
+    for (i = 0; i < 4; i++)
+        RAM8(SETUP_SLOT(i) + 3) = !dwatch && (i == 0 || (i == 1 && pair)) ? SLOT_HUMAN : SLOT_CPU;
 }
 
 /* The title on the line (the menu's BELT tab is greyed out on a fresh save) */
 static void write_belt(void)
 {
-    RAM32(SETUP_BELT) = (uint32_t)dbelt;
-    if (dbelt >= 0) RAM8(CHAMPION(dbelt)) = dchampion;
+    RAM32(SETUP_BELT) = (uint32_t)dsetup.belt;
+    if (dsetup.belt >= 0) {
+        RAM8(CHAMPION(dsetup.belt)) = dsetup.champion[0];
+        RAM8(CHAMPION(dsetup.belt) + 1) = dsetup.champion[1];
+    }
 }
 
 static void director_start(int watch)
 {
-    us_pending_setup(dwrestler, &dbelt, &dchampion);
-    if (dbelt >= 0) dsaved_champion = RAM8(CHAMPION(dbelt));
+    us_pending_setup(&dsetup);
+    if (dsetup.belt >= 0) {
+        dsaved_champion[0] = RAM8(CHAMPION(dsetup.belt));
+        dsaved_champion[1] = RAM8(CHAMPION(dsetup.belt) + 1);
+    }
     dwatch = (uint8_t)watch;
+    dlast_screen = 0xFF;
+    dfilled = 0;
+    dmove = 0;
     darena = (uint8_t)us_show_arena();
     seen_zero = 0;
-    preset_cursor(dwrestler[0]);
+    preset_cursor(dsetup.wrestler[0]);
     RAM8(UNIVERSE_ITEM_MODE) = MODE_EXHIBITION;
     us_cover(1);
     press(B_A);
@@ -248,16 +315,20 @@ static void director_start(int watch)
 /* Back on the menus for good: the game's own title records stay as they were */
 static void director_end_match(void)
 {
-    if (dbelt >= 0) RAM8(CHAMPION(dbelt)) = dsaved_champion;
+    if (dsetup.belt >= 0) {
+        RAM8(CHAMPION(dsetup.belt)) = dsaved_champion[0];
+        RAM8(CHAMPION(dsetup.belt) + 1) = dsaved_champion[1];
+    }
     RAM32(SETUP_BELT) = 0xFFFFFFFFu;
     us_match_closed();
 }
 
-/* Who actually wrestled: the game numbers of both sides (0 = unknown) */
-static void actual_wrestlers(uint8_t n[2])
+/* Who actually wrestled: the game number in each slot (0 = unknown) */
+static void actual_wrestlers(uint8_t n[4])
 {
     int s;
-    for (s = 0; s < 2; s++) n[s] = game_number(*(volatile uint16_t *)SETUP_SLOT(s));
+    for (s = 0; s < 4; s++)
+        n[s] = s < dsetup.n_slots ? game_number(*(volatile uint16_t *)SETUP_SLOT(s)) : 0;
 }
 
 /* Backing out of Superstar Select (B) would go to Exhibition's MATCH tab:
@@ -281,17 +352,26 @@ static void director_tick(void)
     uint8_t screen = RAM8(GAME_SCREEN);
     switch (dstate) {
     case D_ROUTE:
-        /* Universe item -> Exhibition MATCH tab -> START -> Superstar Select */
+        /* Universe item -> Exhibition MATCH tab: the match type is
+         * highlighted and chosen with A (the game commits it and resets the
+         * PLAYER choice) -> PLAYER tab: Watch or 1P is set and START
+         * ("Decision") goes straight to Superstar Select. */
         if (t >= 60) RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;  /* restore the menu item */
-        if (screen == SCREEN_EX_MATCH) {
-            RAM8(EX_MATCH_CURSOR) = 0;                 /* Single Match */
-            set_player_mode();                         /* Watch or 1P vs CPU */
-            set_controllers();
-            set_arena();
-            if (frames >= dnext) { press(B_START); dnext = frames + 20; }
-        } else {
-            dnext = frames + 6;                        /* let the tab settle first */
+        if (screen == SCREEN_EX_MATCH || screen == SCREEN_EX_PLAYER) {
+            if (screen == SCREEN_EX_MATCH) {
+                RAM8(EX_MATCH_CURSOR) = dsetup.match_item;  /* Single, Tag, ... */
+            } else {
+                set_player_mode();                     /* Watch or 1P vs CPU */
+                set_controllers();
+                set_arena();
+            }
+            if (screen != dlast_screen) dnext = frames + 6;  /* let the tab settle first */
+            if (frames >= dnext) {
+                press(screen == SCREEN_EX_MATCH ? B_A : B_START);
+                dnext = frames + 20;
+            }
         }
+        dlast_screen = screen;
         if (screen == SCREEN_SELECT) {
             us_cover(0);
             dstate = D_SELECT;
@@ -310,6 +390,7 @@ static void director_tick(void)
         set_arena();
         write_belt();
         if (backed_out()) break;
+        move_partner_cursor(screen);
         if (screen == SCREEN_MATCH) {
             dt0 = frames;
             dstate = D_INTRO;
@@ -321,15 +402,19 @@ static void director_tick(void)
         break;
     case D_INTRO:           /* entrances, match, replays: all hands off */
     case D_MATCH: {
-        uint8_t r1, r2;
+        uint8_t r[4];
+        int i, zero = 1, won = 0;
         if (backed_out()) break;
-        r1 = RAM8(RESULT_SIDE1);
-        r2 = RAM8(RESULT_SIDE2);
-        if (r1 == 0 && r2 == 0) seen_zero = 1;
-        if (seen_zero && (r1 == 4 || r2 == 4)) {
-            uint8_t n[2];
+        for (i = 0; i < 4; i++) {
+            r[i] = i < dsetup.n_slots ? RAM8(RESULT(i)) : 0;
+            if (r[i]) zero = 0;
+            if (r[i] == 4) won = 1;
+        }
+        if (zero) seen_zero = 1;
+        if (seen_zero && won) {
+            uint8_t n[4];
             actual_wrestlers(n);
-            us_match_result(r1 == 4 ? 0 : 1, r1 == 4 ? r2 : r1, n);
+            us_match_result(r, n);
             seen_result = 0;
             dresults++;
             dstate = D_RETURN;
@@ -421,8 +506,9 @@ uint32_t *dl_end(uint32_t *g)
 
 static void enter_universe(void)
 {
+    volatile Mailbox *mb = MAILBOX;
     universe_mode = 1;
-    us_enter(cp0_count());
+    us_enter(mb->test_seed ? mb->test_seed : cp0_count());
 }
 
 
@@ -503,7 +589,7 @@ static void universe_frame(OSContPad *pads)
     picker_hook(dstate == D_ROUTE || dstate == D_SELECT);
     mb->state = dstate;
     mb->step = dresults;                  /* match results recorded (debug) */
-    if (dstate == D_ROUTE || dstate == D_STEER)
+    if (dstate == D_ROUTE || dstate == D_STEER || dmove)
         pads[0].button = 0;                /* menus: only the director presses buttons */
     if (frames < hold_until) pads[0].button |= hold_buttons;
 }

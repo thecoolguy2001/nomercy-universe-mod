@@ -74,8 +74,70 @@ static void advance_calendar(Universe *u)
 
 const char *u_stip_name(uint8_t stip)
 {
-    static const char *const N[U_STIP_COUNT] = {"", "No DQ", "Steel Cage", "Ladder"};
+    static const char *const N[U_STIP_COUNT] = {
+        "", "Cage", "Ladder", "Ironman", "Guest Referee"};
     return stip < U_STIP_COUNT ? N[stip] : "";
+}
+
+const char *u_format_name(uint8_t format)
+{
+    static const char *const N[U_FMT_COUNT] = {
+        "Single", "Tag Team", "Triple Threat", "Handicap"};
+    return format < U_FMT_COUNT ? N[format] : "";
+}
+
+int u_match_sides(const UMatch *m)
+{
+    return m->format == U_FMT_TRIPLE ? 3 : 2;
+}
+
+static int append(char *buf, int n, int cap, const char *t)
+{
+    while (*t && n < cap - 1) buf[n++] = *t++;
+    buf[n] = 0;
+    return n;
+}
+
+int u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap)
+{
+    int n = 0;
+    if (cap <= 0) return 0;
+    buf[0] = 0;
+    if (m->format == U_FMT_TAG && m->team[side] != U_NONE)
+        return append(buf, 0, cap, u->tm[m->team[side]].name);
+    if (m->side[side][0] != U_NONE) n = append(buf, n, cap, u->w[m->side[side][0]].name);
+    if (m->side[side][1] != U_NONE) {
+        n = append(buf, n, cap, " & ");
+        n = append(buf, n, cap, u->w[m->side[side][1]].name);
+    }
+    return n;
+}
+
+int u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int cap)
+{
+    char part[2 * U_NAME_LEN + 4];
+    int n = 0, k, first = 1, sides = u_match_sides(m);
+    if (cap <= 0) return 0;
+    buf[0] = 0;
+    if (result && m->done) {
+        u_side_text(u, m, m->winner, part, sizeof part);
+        n = append(buf, n, cap, part);
+        n = append(buf, n, cap, " def. ");
+        for (k = 0; k < sides; k++) {
+            if (k == m->winner) continue;
+            if (!first) n = append(buf, n, cap, " and ");
+            u_side_text(u, m, k, part, sizeof part);
+            n = append(buf, n, cap, part);
+            first = 0;
+        }
+        return n;
+    }
+    for (k = 0; k < sides; k++) {
+        if (k) n = append(buf, n, cap, " vs ");
+        u_side_text(u, m, k, part, sizeof part);
+        n = append(buf, n, cap, part);
+    }
+    return n;
 }
 
 const char *u_method_name(uint8_t method, uint8_t stip)
@@ -83,17 +145,19 @@ const char *u_method_name(uint8_t method, uint8_t stip)
     static const char *const N[] = {"pinfall", "submission", "count-out", "DQ"};
     if (method == U_WIN_SPECIAL)
         return stip == U_STIP_LADDER ? "climbing the ladder" : "escaping the cage";
+    if (method == U_WIN_FALLS) return "most falls";
     return method < U_WIN_SPECIAL ? N[method] : "?";
 }
 
 int u_method_allowed(uint8_t stip, uint8_t method)
 {
     switch (stip) {
-    case U_STIP_NORMAL: return method <= U_WIN_DQ;
-    case U_STIP_NO_DQ:  return method == U_WIN_PINFALL || method == U_WIN_SUBMISSION;
-    case U_STIP_CAGE:   return method == U_WIN_PINFALL || method == U_WIN_SUBMISSION ||
-                               method == U_WIN_SPECIAL;
-    case U_STIP_LADDER: return method == U_WIN_SPECIAL;
+    case U_STIP_NORMAL:
+    case U_STIP_REFEREE: return method <= U_WIN_DQ;
+    case U_STIP_CAGE:    return method == U_WIN_PINFALL || method == U_WIN_SUBMISSION ||
+                                method == U_WIN_SPECIAL;
+    case U_STIP_LADDER:  return method == U_WIN_SPECIAL;
+    case U_STIP_IRONMAN: return method == U_WIN_FALLS;
     }
     return 0;
 }
@@ -362,27 +426,31 @@ typedef struct {
     uint8_t   used[U_MAX_WRESTLERS];
 } Booker;
 
-static UMatch *new_match(Booker *b, uint8_t type, uint8_t title, uint8_t stip)
+static UMatch *new_match(Booker *b, uint8_t format, uint8_t title, uint8_t stip)
 {
     UMatch *m;
+    int k;
     if (b->s->count >= b->max) return 0;
     m = &b->s->m[b->s->count++];
     u_zero(m, sizeof *m);
-    m->type = type;
+    m->format = format;
     m->stip = stip;
     m->title = title;
     m->rivalry = U_NONE;
+    m->referee = U_NONE;
     m->winner = U_NONE;
     m->injured = U_NONE;
-    m->team[0] = m->team[1] = U_NONE;
-    m->side[0][1] = m->side[1][1] = U_NONE;
+    for (k = 0; k < 3; k++) {
+        m->team[k] = U_NONE;
+        m->side[k][0] = m->side[k][1] = U_NONE;
+    }
     return m;
 }
 
 static void book_singles(Booker *b, uint8_t x, uint8_t y, uint8_t title,
                          uint8_t riv, uint8_t stip)
 {
-    UMatch *m = new_match(b, U_MT_SINGLES, title, stip);
+    UMatch *m = new_match(b, U_FMT_SINGLE, title, stip);
     if (!m) return;
     m->side[0][0] = x;
     m->side[1][0] = y;
@@ -392,7 +460,7 @@ static void book_singles(Booker *b, uint8_t x, uint8_t y, uint8_t title,
 
 static void book_tag(Booker *b, uint8_t ta, uint8_t tb, uint8_t title, uint8_t stip)
 {
-    UMatch *m = new_match(b, U_MT_TAG, title, stip);
+    UMatch *m = new_match(b, U_FMT_TAG, title, stip);
     const UTeam *A = &b->u->tm[ta], *B = &b->u->tm[tb];
     if (!m) return;
     m->team[0] = ta;
@@ -400,6 +468,28 @@ static void book_tag(Booker *b, uint8_t ta, uint8_t tb, uint8_t title, uint8_t s
     m->side[0][0] = A->a; m->side[0][1] = A->b;
     m->side[1][0] = B->a; m->side[1][1] = B->b;
     b->used[A->a] = b->used[A->b] = b->used[B->a] = b->used[B->b] = 1;
+}
+
+static void book_triple(Booker *b, uint8_t x, uint8_t y, uint8_t z, uint8_t title,
+                        uint8_t stip)
+{
+    UMatch *m = new_match(b, U_FMT_TRIPLE, title, stip);
+    if (!m) return;
+    m->side[0][0] = x;
+    m->side[1][0] = y;
+    m->side[2][0] = z;
+    b->used[x] = b->used[y] = b->used[z] = 1;
+}
+
+/* x alone against y and z */
+static void book_handicap(Booker *b, uint8_t x, uint8_t y, uint8_t z, uint8_t stip)
+{
+    UMatch *m = new_match(b, U_FMT_HANDICAP, U_NONE, stip);
+    if (!m) return;
+    m->side[0][0] = x;
+    m->side[1][0] = y;
+    m->side[1][1] = z;
+    b->used[x] = b->used[y] = b->used[z] = 1;
 }
 
 static int team_free(const Booker *b, uint8_t team)
@@ -437,12 +527,14 @@ static int pick_contender(const Booker *b, const uint8_t *rank, int n)
     return -1;
 }
 
+/* Interim (step 1): the full stipulation rules of notes/universe-plan.md
+ * come with the booking step. Weekly TV: a hot feud is sometimes a Cage. */
 static uint8_t feud_stip(Booker *b, const URivalry *r, int title_match)
 {
-    if (b->s->kind != U_SHOW_PPV) return U_STIP_NORMAL;
+    if (b->s->kind != U_SHOW_PPV)
+        return r->intensity >= 50 && u_rand(b->u, 100) < 15 ? U_STIP_CAGE : U_STIP_NORMAL;
     if (r->intensity >= 70)
         return title_match && u_rand(b->u, 2) ? U_STIP_LADDER : U_STIP_CAGE;
-    if (r->intensity >= 45) return U_STIP_NO_DQ;
     return U_STIP_NORMAL;
 }
 
@@ -559,6 +651,21 @@ void u_book_show(Universe *u, UShow *s)
         break; /* one extra tag match per show */
     }
 
+    /* Weekly TV sometimes has a Triple Threat or a Handicap match among
+     * wrestlers still free (nearby in the rankings). */
+    if (!ppv && s->count < b.max) {
+        uint8_t f[3];
+        int nf = 0, roll = (int)u_rand(u, 100);
+        for (i = 0; i < n && nf < 3; i++)
+            if (!b.used[rank[i]]) f[nf++] = rank[i];
+        if (nf == 3 && roll < 30) {
+            book_triple(&b, f[0], f[1], f[2], U_NONE, U_STIP_NORMAL);
+        } else if (nf == 3 && roll < 50) {
+            /* the best of the three alone against the other two */
+            book_handicap(&b, f[0], f[1], f[2], U_STIP_NORMAL);
+        }
+    }
+
     for (i = 0; i < n && s->count < b.max; i++) {
         uint8_t a = rank[i];
         int pick = -1;
@@ -593,25 +700,43 @@ static int side_rating(const Universe *u, const UMatch *m, int side)
         sum += u->w[id].overall + u->w[id].momentum / 4;
         cnt++;
     }
+    if (!cnt) return 0;
     sum /= cnt;
-    if (m->type == U_MT_TAG) {
+    if (m->format == U_FMT_TAG) {
         const UTeam *t = &u->tm[m->team[side]];
         sum += clamp((int)t->wins - (int)t->losses, -10, 10);
     }
+    if (m->format == U_FMT_HANDICAP && side == 1) sum += 12;  /* two on one */
     return sum;
+}
+
+static uint8_t sim_winner(Universe *u, const UMatch *m)
+{
+    if (u_match_sides(m) == 3) {
+        int r[3], wsum = 0, k, avg, roll;
+        for (k = 0; k < 3; k++) r[k] = side_rating(u, m, k);
+        avg = (r[0] + r[1] + r[2]) / 3;
+        for (k = 0; k < 3; k++) wsum += r[k] = clamp(33 + r[k] - avg, 10, 60);
+        roll = (int)u_rand(u, (uint32_t)wsum);
+        for (k = 0; k < 2; k++) {
+            if (roll < r[k]) return (uint8_t)k;
+            roll -= r[k];
+        }
+        return 2;
+    }
+    {
+        int p = clamp(50 + side_rating(u, m, 0) - side_rating(u, m, 1), 15, 85);
+        return (int)u_rand(u, 100) < p ? 0 : 1;
+    }
 }
 
 void u_sim_match(Universe *u, UMatch *m)
 {
-    int p = clamp(50 + side_rating(u, m, 0) - side_rating(u, m, 1), 15, 85);
     uint32_t roll;
 
-    m->winner = (int)u_rand(u, 100) < p ? 0 : 1;
+    m->winner = sim_winner(u, m);
     roll = u_rand(u, 100);
     switch (m->stip) {
-    case U_STIP_NO_DQ:
-        m->method = roll < 78 ? U_WIN_PINFALL : U_WIN_SUBMISSION;
-        break;
     case U_STIP_CAGE:
         m->method = roll < 45 ? U_WIN_PINFALL : roll < 60 ? U_WIN_SUBMISSION
                                                           : U_WIN_SPECIAL;
@@ -619,6 +744,13 @@ void u_sim_match(Universe *u, UMatch *m)
     case U_STIP_LADDER:
         m->method = U_WIN_SPECIAL;
         break;
+    case U_STIP_IRONMAN: {
+        uint8_t wf = (uint8_t)(1 + u_rand(u, 5)), lf = (uint8_t)u_rand(u, wf);
+        m->method = U_WIN_FALLS;
+        m->falls[m->winner] = wf;
+        m->falls[1 - m->winner] = lf;
+        break;
+    }
     default:
         m->method = roll < 70 ? U_WIN_PINFALL : roll < 88 ? U_WIN_SUBMISSION
                   : roll < 95 ? U_WIN_COUNTOUT : U_WIN_DQ;
@@ -630,10 +762,23 @@ void u_sim_match(Universe *u, UMatch *m)
 /* Record the result of a match the player actually played. */
 int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
 {
-    if (winning_side > 1) return -1;
+    if (winning_side >= u_match_sides(m) || method == U_WIN_FALLS) return -1;
     if (!u_method_allowed(m->stip, method)) return -1;
     m->winner = winning_side;
     m->method = method;
+    m->source = U_SRC_PLAYED;
+    m->done = 1;
+    return 0;
+}
+
+/* An Ironman match the player played: falls scored by each side */
+int u_set_ironman_result(UMatch *m, uint8_t falls0, uint8_t falls1)
+{
+    if (m->stip != U_STIP_IRONMAN || u_match_sides(m) != 2 || falls0 == falls1) return -1;
+    m->falls[0] = falls0;
+    m->falls[1] = falls1;
+    m->winner = falls0 > falls1 ? 0 : 1;
+    m->method = U_WIN_FALLS;
     m->source = U_SRC_PLAYED;
     m->done = 1;
     return 0;
@@ -646,33 +791,49 @@ static void add_momentum(UWrestler *w, int d)
 
 static int side_score(const Universe *u, const UMatch *m, int side)
 {
-    return m->type == U_MT_TAG ? u_team_score(u, m->team[side])
-                               : u_score(&u->w[m->side[side][0]]);
+    int k, sum = 0, cnt = 0;
+    if (m->format == U_FMT_TAG) return u_team_score(u, m->team[side]);
+    for (k = 0; k < 2; k++)
+        if (m->side[side][k] != U_NONE) {
+            sum += u_score(&u->w[m->side[side][k]]);
+            cnt++;
+        }
+    return cnt ? sum / cnt : 0;
 }
 
 static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched)
 {
-    int W = m->winner, L = 1 - W, k, ri;
-    int upset = side_score(u, m, W) + 10 < side_score(u, m, L);
+    int W = m->winner, n = u_match_sides(m), L, k, ri, best_loser = -1;
     int decisive = m->method == U_WIN_PINFALL || m->method == U_WIN_SUBMISSION ||
-                   m->method == U_WIN_SPECIAL;
-    int tag = m->type == U_MT_TAG;
+                   m->method == U_WIN_SPECIAL || m->method == U_WIN_FALLS;
+    int tag = m->format == U_FMT_TAG;
+    int upset;
     uint8_t champ_id = tag ? m->team[W] : m->side[W][0];
+    uint8_t losers[4];
+    int nl = 0;
 
-    for (k = 0; k < 2; k++) {
-        uint8_t w = m->side[W][k], l = m->side[L][k];
-        if (w != U_NONE) {
-            u->w[w].wins++;
-            add_momentum(&u->w[w], (upset ? 14 : 8) - (tag ? 2 : 0));
-        }
-        if (l != U_NONE) {
-            u->w[l].losses++;
-            add_momentum(&u->w[l], tag ? -4 : -6);
+    for (L = 0; L < n; L++)
+        if (L != W && (best_loser < 0 || side_score(u, m, L) > side_score(u, m, best_loser)))
+            best_loser = L;
+    upset = side_score(u, m, W) + 10 < side_score(u, m, best_loser);
+
+    for (L = 0; L < n; L++) {
+        for (k = 0; k < 2; k++) {
+            uint8_t id = m->side[L][k];
+            if (id == U_NONE) continue;
+            if (L == W) {
+                u->w[id].wins++;
+                add_momentum(&u->w[id], (upset ? 14 : 8) - (tag ? 2 : 0));
+            } else {
+                u->w[id].losses++;
+                add_momentum(&u->w[id], tag ? -4 : -6);
+                if (nl < 4) losers[nl++] = id;
+            }
         }
     }
     if (tag) {
         u->tm[m->team[W]].wins++;
-        u->tm[m->team[L]].losses++;
+        u->tm[m->team[1 - W]].losses++;
     }
 
     /* Titles only change hands decisively (not by count-out or DQ). */
@@ -700,25 +861,27 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
         }
     }
 
-    /* Rivalries (singles): cheap finishes add heat, a clean win settles it
-     * at a PPV or after 4 shows. Upsets and cheap finishes start new ones. */
-    if (!tag) {
+    /* Rivalries: cheap finishes add heat, a clean win settles it at a PPV
+     * or after 4 shows. In singles, upsets and cheap finishes start new ones. */
+    ri = m->rivalry;
+    if (ri == U_NONE && m->format == U_FMT_SINGLE)
+        ri = find_rivalry(u, m->side[0][0], m->side[1][0]);
+    if (ri != U_NONE && ri >= 0 && u->r[ri].intensity) {
+        URivalry *r = &u->r[ri];
+        touched[ri] = 1;
+        if (r->weeks < 255) r->weeks++;
+        if (!decisive) {
+            r->intensity = (uint8_t)clamp(r->intensity + 20, 1, 100);
+        } else if (s->kind == U_SHOW_PPV || r->weeks >= 4) {
+            r->intensity = 0;
+            m->rivalry_ended = 1;
+        } else {
+            r->intensity = (uint8_t)clamp(r->intensity + 10, 1, 100);
+        }
+    } else if (m->format == U_FMT_SINGLE) {
         uint8_t a = m->side[0][0], b = m->side[1][0];
-        ri = m->rivalry != U_NONE ? m->rivalry : find_rivalry(u, a, b);
-        if (ri >= 0 && u->r[ri].intensity) {
-            URivalry *r = &u->r[ri];
-            touched[ri] = 1;
-            if (r->weeks < 255) r->weeks++;
-            if (!decisive) {
-                r->intensity = (uint8_t)clamp(r->intensity + 20, 1, 100);
-            } else if (s->kind == U_SHOW_PPV || r->weeks >= 4) {
-                r->intensity = 0;
-                m->rivalry_ended = 1;
-            } else {
-                r->intensity = (uint8_t)clamp(r->intensity + 10, 1, 100);
-            }
-        } else if ((upset || !decisive) && !in_rivalry(u, a) && !in_rivalry(u, b) &&
-                   u_rand(u, 100) < 50) {
+        if ((upset || !decisive) && !in_rivalry(u, a) && !in_rivalry(u, b) &&
+            u_rand(u, 100) < 50) {
             int nr = u_add_rivalry(u, a, b, 30);
             if (nr >= 0) {
                 touched[nr] = 1;
@@ -727,8 +890,8 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
         }
     }
 
-    if (u_rand(u, 100) < 4) {
-        uint8_t id = m->side[L][tag ? u_rand(u, 2) : 0];
+    if (nl && u_rand(u, 100) < 4) {
+        uint8_t id = losers[u_rand(u, (uint32_t)nl)];
         u->w[id].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
         m->injured = id;
         m->injury_weeks = u->w[id].injured_weeks;

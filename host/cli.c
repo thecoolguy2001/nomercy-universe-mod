@@ -59,7 +59,11 @@ static const char *holder_name(const Universe *u, const UTitle *t, uint8_t h)
 
 static const char *side_name(const Universe *u, const UMatch *m, int side)
 {
-    return m->type == U_MT_TAG ? u->tm[m->team[side]].name : u->w[m->side[side][0]].name;
+    static char buf[4][2 * U_NAME_LEN + 4];
+    static int next;
+    char *b = buf[next++ & 3];
+    u_side_text(u, m, side, b, sizeof buf[0]);
+    return b;
 }
 
 static void print_status(const Universe *u)
@@ -112,8 +116,10 @@ static void print_status(const Universe *u)
 
 static void print_match(const Universe *u, const UMatch *m, int num, int last)
 {
-    printf("  %d. %s%s vs %s", num, last ? "MAIN EVENT: " : "",
-           side_name(u, m, 0), side_name(u, m, 1));
+    char text[128];
+    u_match_text(u, m, 0, text, sizeof text);
+    printf("  %d. %s%s", num, last ? "MAIN EVENT: " : "", text);
+    if (m->format != U_FMT_SINGLE) printf("  <%s>", u_format_name(m->format));
     if (m->stip != U_STIP_NORMAL) printf("  <%s>", u_stip_name(m->stip));
     if (m->title != U_NONE) printf("  [%s]", u->t[m->title].name);
     if (m->rivalry != U_NONE) printf("  (rivalry)");
@@ -127,12 +133,15 @@ static int ask_result(const Universe *u, UMatch *m)
     int na = 0, i;
     for (i = 0; i < U_WIN_METHOD_COUNT; i++)
         if (u_method_allowed(m->stip, (uint8_t)i)) allowed[na++] = (uint8_t)i;
+    int sides = u_match_sides(m);
+    if (m->stip == U_STIP_IRONMAN) return 0;   /* simulated (falls) */
     for (;;) {
-        printf("     Winner? 1 = %s, 2 = %s, Enter = simulate: ",
-               side_name(u, m, 0), side_name(u, m, 1));
+        printf("     Winner? 1 = %s, 2 = %s", side_name(u, m, 0), side_name(u, m, 1));
+        if (sides == 3) printf(", 3 = %s", side_name(u, m, 2));
+        printf(", Enter = simulate: ");
         fflush(stdout);
         if (!fgets(line, sizeof line, stdin) || line[0] == '\n') return 0;
-        if (line[0] == '1' || line[0] == '2') {
+        if (line[0] >= '1' && line[0] < '1' + sides) {
             int pick = 0;
             if (na > 1) {
                 printf("     How?");
@@ -168,9 +177,13 @@ static void run_show(Universe *u, int play)
         } else {
             u_sim_match(u, m);
         }
-        printf("  %s def. %s by %s%s\n", side_name(u, m, m->winner),
-               side_name(u, m, 1 - m->winner), u_method_name(m->method, m->stip),
-               m->source == U_SRC_PLAYED ? "  (played)" : "");
+        {
+            char text[128];
+            u_match_text(u, m, 1, text, sizeof text);
+            printf("  %s by %s", text, u_method_name(m->method, m->stip));
+            if (m->method == U_WIN_FALLS) printf(" (%u-%u)", m->falls[m->winner], m->falls[1 - m->winner]);
+            printf("%s\n", m->source == U_SRC_PLAYED ? "  (played)" : "");
+        }
     }
 
     u_apply_show(u, &s);
@@ -189,7 +202,7 @@ static void run_show(Universe *u, int play)
             printf("  A new rivalry: %s vs %s.\n", side_name(u, m, 0), side_name(u, m, 1));
         if (m->rivalry_ended)
             printf("  %s settles the score with %s.\n", side_name(u, m, m->winner),
-                   side_name(u, m, 1 - m->winner));
+                   side_name(u, m, m->winner ? 0 : 1));
         if (m->injured != U_NONE)
             printf("  %s is injured and out %u week(s).\n", u->w[m->injured].name,
                    m->injury_weeks);

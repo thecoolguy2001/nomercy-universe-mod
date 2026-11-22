@@ -26,7 +26,7 @@ static void run_shows(Universe *u, int shows)
 static int involves(const UMatch *m, uint8_t id)
 {
     int s, k;
-    for (s = 0; s < 2; s++)
+    for (s = 0; s < 3; s++)
         for (k = 0; k < 2; k++)
             if (m->side[s][k] == id) return 1;
     return 0;
@@ -132,26 +132,30 @@ static void test_booking_invariants(void)
             CHECK(s.count <= (s.kind == U_SHOW_PPV ? U_PPV_MATCHES : U_WEEKLY_MATCHES));
             for (i = 0; i < s.count; i++) {
                 const UMatch *m = &s.m[i];
-                for (k = 0; k < 4; k++) {
+                CHECK(m->format < U_FMT_COUNT && m->stip < U_STIP_COUNT);
+                for (k = 0; k < 6; k++) {
                     uint8_t id = m->side[k / 2][k % 2];
-                    if (id == U_NONE) {
-                        CHECK(m->type == U_MT_SINGLES && k % 2 == 1);
-                        continue;
-                    }
+                    /* who may be on each side, by format */
+                    int expect = k / 2 >= u_match_sides(m) ? 0
+                               : m->format == U_FMT_TAG ? 1
+                               : m->format == U_FMT_HANDICAP && k / 2 == 1 ? 1
+                               : k % 2 == 0;
+                    CHECK((id != U_NONE) == expect);
+                    if (id == U_NONE) continue;
                     CHECK(id < u.n_wrestlers);
                     CHECK(!seen[id]);
                     seen[id] = 1;
                     CHECK(u.w[id].active && u.w[id].injured_weeks == 0);
                     if (s.brand != U_NONE) CHECK(u.w[id].brand == s.brand);
                 }
-                if (m->type == U_MT_TAG) CHECK(m->team[0] != m->team[1]);
-                else CHECK(m->side[0][0] != m->side[1][0]);
+                if (m->format == U_FMT_TAG) CHECK(m->team[0] != m->team[1]);
+                if (m->format == U_FMT_HANDICAP) CHECK(m->title == U_NONE);
                 if (m->title != U_NONE) {
                     const UTitle *ti = &u.t[m->title];
                     uint8_t h = u_title_holder(&u, m->title);
-                    CHECK((ti->kind == U_TITLE_TAG) == (m->type == U_MT_TAG));
+                    CHECK((ti->kind == U_TITLE_TAG) == (m->format == U_FMT_TAG));
                     if (h != U_NONE && ti->kind == U_TITLE_SINGLES)
-                        CHECK(m->side[0][0] == h || m->side[1][0] == h);
+                        CHECK(involves(m, h));
                     if (h != U_NONE && ti->kind == U_TITLE_TAG)
                         CHECK(m->team[0] == h || m->team[1] == h);
                     if (s.kind == U_SHOW_WEEKLY) CHECK(ti->brand == s.brand);
@@ -254,7 +258,7 @@ static void test_tag_title_change(void)
     mi = next_title_match(&u, &s, 2);
     CHECK(mi >= 0);
     if (mi < 0) return;
-    CHECK(s.m[mi].type == U_MT_TAG);
+    CHECK(s.m[mi].format == U_FMT_TAG);
     cs = s.m[mi].team[0] == champs ? 1 : 0;
     CHECK(u_set_result(&s.m[mi], (uint8_t)cs,
                        s.m[mi].stip == U_STIP_LADDER ? U_WIN_SPECIAL : U_WIN_PINFALL) == 0);
@@ -279,10 +283,21 @@ static void test_played_result_validation(void)
     m.stip = U_STIP_LADDER;
     CHECK(u_set_result(&m, 0, U_WIN_PINFALL) == -1);
     CHECK(u_set_result(&m, 0, U_WIN_SPECIAL) == 0);
-    m.stip = U_STIP_NO_DQ;
+    m.stip = U_STIP_CAGE;
     CHECK(u_set_result(&m, 1, U_WIN_DQ) == -1);
     CHECK(u_set_result(&m, 1, U_WIN_SUBMISSION) == 0);
     CHECK(m.done && m.source == U_SRC_PLAYED && m.winner == 1);
+    m.done = 0;
+    m.stip = U_STIP_IRONMAN;
+    CHECK(u_set_result(&m, 0, U_WIN_PINFALL) == -1);
+    CHECK(u_set_ironman_result(&m, 2, 2) == -1);
+    CHECK(u_set_ironman_result(&m, 1, 3) == 0);
+    CHECK(m.winner == 1 && m.method == U_WIN_FALLS && m.falls[1] == 3);
+    m.done = 0;
+    m.format = U_FMT_TRIPLE;
+    m.stip = U_STIP_NORMAL;
+    CHECK(u_set_result(&m, 2, U_WIN_PINFALL) == 0);
+    CHECK(u_set_result(&m, 3, U_WIN_PINFALL) == -1);
 }
 
 static void test_rivalry_booked(void)
@@ -294,7 +309,7 @@ static void test_rivalry_booked(void)
     u_add_rivalry(&u, 4, 5, 90); /* Bull Buchanan vs Rikishi (Raw) */
     u_book_show(&u, &s);
     for (i = 0; i < s.count; i++)
-        if (s.m[i].type == U_MT_SINGLES && involves(&s.m[i], 4) && involves(&s.m[i], 5))
+        if (s.m[i].format == U_FMT_SINGLE && involves(&s.m[i], 4) && involves(&s.m[i], 5))
             found = 1;
     CHECK(found);
 }
@@ -401,6 +416,40 @@ static void test_roster_management(void)
     CHECK(u_set_overall(&u, 0, 150) == 0 && u.w[0].overall == 100);
 }
 
+/* Over a year, weekly TV books every format and Cage matches; a triple
+ * threat or handicap result gives every wrestler a win or a loss. */
+static void test_formats_booked(void)
+{
+    Universe u;
+    UShow s;
+    int show, i, k, count[U_FMT_COUNT] = {0}, cages = 0;
+    demo_universe(&u, 5);
+    for (show = 0; show < 52 * 2; show++) {
+        u_book_show(&u, &s);
+        for (i = 0; i < s.count; i++) {
+            UMatch *m = &s.m[i];
+            count[m->format]++;
+            if (m->stip == U_STIP_CAGE && s.kind == U_SHOW_WEEKLY) cages++;
+            u_sim_match(&u, m);
+            CHECK(m->winner < u_match_sides(m));
+        }
+        {
+            /* everyone in a triple threat / handicap gets exactly one result */
+            uint16_t tot[U_MAX_WRESTLERS];
+            for (k = 0; k < u.n_wrestlers; k++) tot[k] = (uint16_t)(u.w[k].wins + u.w[k].losses);
+            u_apply_show(&u, &s);
+            for (i = 0; i < s.count; i++)
+                for (k = 0; k < 6; k++) {
+                    uint8_t id = s.m[i].side[k / 2][k % 2];
+                    if (id != U_NONE) CHECK(u.w[id].wins + u.w[id].losses == tot[id] + 1);
+                }
+        }
+    }
+    CHECK(count[U_FMT_SINGLE] > 0 && count[U_FMT_TAG] > 0);
+    CHECK(count[U_FMT_TRIPLE] > 0 && count[U_FMT_HANDICAP] > 0);
+    CHECK(cages > 0);
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -416,6 +465,7 @@ int main(void)
     test_cross_brand_rivalry_at_ppv();
     test_injured_skip();
     test_roster_management();
+    test_formats_booked();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;

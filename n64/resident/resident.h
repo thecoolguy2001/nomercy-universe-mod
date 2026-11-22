@@ -43,7 +43,8 @@ typedef struct {
     uint32_t song_request;   /* 0x20 (0x100 | song) -> play_song(song); cleared when done */
     uint32_t music_override; /* 0x24 song that replaces menu music (0 = off); read by the asm hook */
     uint32_t test_select;    /* 0x28 test: 1 = press A on the Universe item (bypassing Universe Mode) */
-    uint32_t reserved[5];
+    uint32_t test_seed;      /* 0x2C test: non-zero = seed for a new universe (repeatable cards) */
+    uint32_t reserved[4];
 } Mailbox;
 
 #endif

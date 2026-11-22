@@ -57,7 +57,11 @@ static void s_num(Str *s, unsigned v)
 
 static const char *side(const UMatch *m, int k)
 {
-    return m->type == U_MT_TAG ? U.tm[m->team[k]].name : U.w[m->side[k][0]].name;
+    static char buf[4][2 * U_NAME_LEN + 4];
+    static uint8_t next;
+    char *b = buf[next++ & 3];
+    u_side_text(&U, m, k, b, sizeof buf[0]);
+    return b;
 }
 
 static int card_done(void)
@@ -148,6 +152,25 @@ static void finish_show(void)
     view = 1;
 }
 
+/* Which game slot holds which wrestler of the match: Exhibition fills
+ * slots in pick order. Tag: 0-1 vs 2-3. Handicap: the pair (slots 0-1)
+ * vs the lone wrestler (slot 2). Triple Threat: one per slot. */
+static const uint8_t SLOT_SIDE[U_FMT_COUNT][4] = {
+    {0, 1, 0, 0}, {0, 0, 1, 1}, {0, 1, 2, 0}, {1, 1, 0, 0}};
+static const uint8_t SLOT_K[U_FMT_COUNT][4] = {
+    {0, 0, 0, 0}, {0, 1, 0, 1}, {0, 0, 0, 0}, {0, 1, 0, 0}};
+static const uint8_t FMT_SLOTS[U_FMT_COUNT] = {2, 4, 3, 3};
+/* Exhibition MATCH tab items */
+enum { EX_SINGLE = 0, EX_TAG, EX_TRIPLE, EX_HANDICAP, EX_CAGE };
+
+/* Matches the game can stage from Exhibition (step 1 of the plan; the
+ * Multi Play stipulations come next). Exhibition's Cage Match is 1 on 1. */
+static int playable(const UMatch *m)
+{
+    return m->stip == U_STIP_NORMAL ||
+           (m->stip == U_STIP_CAGE && m->format == U_FMT_SINGLE);
+}
+
 int us_input(uint16_t pressed)
 {
     if (pressed & B_B) return 0;
@@ -161,8 +184,7 @@ int us_input(uint16_t pressed)
         if (pressed & (B_A | B_START)) finish_show();
         return 1;
     }
-    if ((pressed & (B_Z | B_R)) && !SHOW.m[cursor].done &&
-        SHOW.m[cursor].type == U_MT_SINGLES) {
+    if ((pressed & (B_Z | B_R)) && !SHOW.m[cursor].done && playable(&SHOW.m[cursor])) {
         pending = cursor;
         pending_watch = (pressed & B_Z) ? 1 : 0;
         return 2;                         /* resident launches the real match */
@@ -177,11 +199,6 @@ int us_input(uint16_t pressed)
     return 1;
 }
 
-const char *us_pending_name(int side)
-{
-    return demo_game_name(SHOW.m[pending].side[side][0]);
-}
-
 int us_pending_watch(void) { return pending_watch; }
 
 /* No Mercy belt for each Universe title (demo roster order: WWF, IC, Tag,
@@ -189,18 +206,29 @@ int us_pending_watch(void) { return pending_watch; }
  * 4 Hardcore, 5 Light Heavyweight, 6 Women's. */
 static const int8_t GAME_BELT[] = { 0, 2, 1, 3, -1, -1 };
 
-void us_pending_setup(uint8_t game_wrestler[2], int *belt, uint8_t *champion)
+void us_pending_setup(USetup *st)
 {
     const UMatch *m = &SHOW.m[pending];
-    int s;
-    for (s = 0; s < 2; s++) game_wrestler[s] = demo_game_index(m->side[s][0]);
-    *belt = -1;
-    *champion = 0;
-    if (m->title != U_NONE && m->title < sizeof GAME_BELT && GAME_BELT[m->title] >= 0 &&
-        U.t[m->title].kind == U_TITLE_SINGLES) {
+    int i;
+    st->n_slots = FMT_SLOTS[m->format];
+    st->match_item = m->stip == U_STIP_CAGE ? EX_CAGE
+                   : m->format == U_FMT_TAG ? EX_TAG
+                   : m->format == U_FMT_TRIPLE ? EX_TRIPLE
+                   : m->format == U_FMT_HANDICAP ? EX_HANDICAP : EX_SINGLE;
+    for (i = 0; i < 4; i++)
+        st->wrestler[i] = i < st->n_slots
+            ? demo_game_index(m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]]) : 0;
+    st->belt = -1;
+    st->champion[0] = st->champion[1] = 0;
+    if (m->title != U_NONE && m->title < sizeof GAME_BELT && GAME_BELT[m->title] >= 0) {
         uint8_t h = u_title_holder(&U, m->title);
-        *belt = GAME_BELT[m->title];
-        *champion = h == U_NONE ? 0 : demo_game_index(h);
+        st->belt = GAME_BELT[m->title];
+        if (h != U_NONE && U.t[m->title].kind == U_TITLE_TAG) {
+            st->champion[0] = demo_game_index(U.tm[h].a);
+            st->champion[1] = demo_game_index(U.tm[h].b);
+        } else if (h != U_NONE) {
+            st->champion[0] = demo_game_index(h);
+        }
     }
 }
 
@@ -214,26 +242,38 @@ static uint8_t universe_wrestler(uint8_t game_n)
     return U_NONE;
 }
 
-/* Result of a match played/watched in No Mercy. game_n: who actually
- * wrestled on each side (the player may change the picks on Superstar
- * Select); a wrestler from the universe replaces the card's one. The
- * loser's result byte says how they lost; 1 = pinned (seen on every
- * pinfall so far). A rematch calls this again and replaces the result. */
-void us_match_result(int winner_side, int loser_code, const uint8_t game_n[2])
+static int in_match(const UMatch *m, uint8_t id)
+{
+    int k;
+    for (k = 0; k < 6; k++)
+        if (m->side[k / 2][k % 2] == id) return 1;
+    return 0;
+}
+
+/* Result of a match played/watched in No Mercy: result[slot] is the game's
+ * result byte for each slot (4 = won), game_n[slot] who actually wrestled
+ * there (the player may change the picks on Superstar Select; outside tag
+ * matches a wrestler from the universe replaces the card's one). A rematch
+ * calls this again and replaces the result. */
+void us_match_result(const uint8_t result[4], const uint8_t game_n[4])
 {
     UMatch *m;
-    uint8_t w[2];
-    int s;
+    int i, n, win = -1;
     if (pending == U_NONE) return;
     m = &SHOW.m[pending];
-    for (s = 0; s < 2; s++) {
-        w[s] = universe_wrestler(game_n[s]);
-        if (w[s] == U_NONE) w[s] = m->side[s][0];
-    }
-    if (w[0] != w[1]) { m->side[0][0] = w[0]; m->side[1][0] = w[1]; }
-    u_set_result(m, (uint8_t)winner_side,
+    n = FMT_SLOTS[m->format];
+    for (i = 0; i < n; i++)
+        if (result[i] == 4) { win = SLOT_SIDE[m->format][i]; break; }
+    if (win < 0) return;
+    if (m->format != U_FMT_TAG)
+        for (i = 0; i < n; i++) {
+            uint8_t w = universe_wrestler(game_n[i]);
+            uint8_t *slot = &m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]];
+            if (w != U_NONE && w != *slot && !in_match(m, w)) *slot = w;
+        }
+    m->done = 0;
+    u_set_result(m, (uint8_t)win,
                  m->stip == U_STIP_LADDER ? U_WIN_SPECIAL : U_WIN_PINFALL);
-    (void)loser_code;
 }
 
 /* The game is back on the menus: no more results for this match */
@@ -348,16 +388,14 @@ void us_draw(void *holder)
         const UMatch *m = &SHOW.m[i];
         s_init(&s, line[1 + i], LINE_LEN);
         if (i == cursor) s_add(&s, "$d ");
-        if (m->done) {
-            s_add(&s, side(m, m->winner));
-            s_add(&s, " def. ");
-            s_add(&s, side(m, 1 - m->winner));
-        } else {
-            s_add(&s, side(m, 0));
-            s_add(&s, " vs ");
-            s_add(&s, side(m, 1));
+        {
+            char t[LINE_LEN];
+            u_match_text(&U, m, 1, t, sizeof t);
+            s_add(&s, t);
         }
-        small(holder, line[1 + i], y);
+        /* long lines (handicap, triple threat, tag names) are drawn smaller
+         * so they stay inside the panel */
+        text_scaled(holder, line[1 + i], y, s.n > 34 ? 0xA8 : s.n > 28 ? 0xC0 : 0xD8);
     }
 
     /* details of the selected match */
@@ -365,14 +403,16 @@ void us_draw(void *holder)
         const UMatch *m = &SHOW.m[cursor];
         s_init(&s, line[10], LINE_LEN);
         if (cursor == SHOW.count - 1) s_add(&s, "Main Event  ");
-        if (m->title != U_NONE) { s_add(&s, U.t[m->title].name); s_add(&s, "  "); }
-        if (m->stip != U_STIP_NORMAL) s_add(&s, u_stip_name(m->stip));
+        if (m->format != U_FMT_SINGLE) { s_add(&s, u_format_name(m->format)); s_add(&s, " "); }
+        if (m->stip != U_STIP_NORMAL) { s_add(&s, u_stip_name(m->stip)); s_add(&s, " "); }
+        if (m->format != U_FMT_SINGLE || m->stip != U_STIP_NORMAL) s_add(&s, "Match  ");
+        if (m->title != U_NONE) s_add(&s, U.t[m->title].name);
         if (m->done) { s_add(&s, "  by "); s_add(&s, u_method_name(m->method, m->stip)); }
         small(holder, line[10], 176);
     }
     if (card_done())
         text(holder, "$0Results   $1Back", 198);
-    else if (SHOW.m[cursor].type == U_MT_SINGLES)
+    else if (playable(&SHOW.m[cursor]))
         small(holder, "$3Play $4Watch $0Sim $eAll $1Back", 198);
     else
         small(holder, "$0Sim  $eSim All  $1Back", 198);
