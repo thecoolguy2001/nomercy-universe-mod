@@ -301,7 +301,7 @@ static int allowed_methods(const UMatch *m)
 {
     int i, n = 0;
     for (i = 0; i < U_WIN_METHOD_COUNT; i++)
-        if (i != U_WIN_DRAW && u_method_allowed(m->stip, (uint8_t)i))
+        if (i != U_WIN_DRAW && i != U_WIN_RUMBLE && u_method_allowed(m->stip, (uint8_t)i))
             report_methods[n++] = (uint8_t)i;
     return n;
 }
@@ -558,7 +558,8 @@ static void handle(uint16_t btn)
             if (pending == cursor) pending = U_NONE;
             persist_store();
             if (all_done()) cursor = SHOW.count;
-        } else if ((btn & BTN_START) && !SHOW.m[cursor].done) {
+        } else if ((btn & BTN_START) && !SHOW.m[cursor].done &&
+                   SHOW.m[cursor].format != U_FMT_RUMBLE) {   /* (Rumbles: sim only here) */
             pending = (uint8_t)cursor;
             persist_store();
             go(SC_PLAY);

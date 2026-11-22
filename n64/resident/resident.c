@@ -30,6 +30,7 @@
 #define CLOCK_SEC      0x8015AB1Cu
 #define RESULT(slot)   (0x8015AF45u + 0x358u * (slot))  /* per slot: 0 in the match, 4 = won */
 #define FALLS(slot)    (0x8015A73Bu + 4u * (slot))      /* Ironman falls scored (low byte of a u32) */
+#define SLOT_ID(slot)  (0x8015AF50u + 0x358u * (slot))  /* u16 id of who is in that place */
 /* Both are only valid on the match screen: the result screen reuses them. */
 #define FINISH_FLAGS   0x800A261Cu   /* u32 set at the bell, kept for the result screen */
 
@@ -118,6 +119,11 @@ static int universe_highlighted(void);
  * tab's own bytes and the copy the match loader uses */
 static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x800AA99Fu };
 /* Match setup read by the match loader */
+/* Royal Rumble: the NUMBER tab object (pointer), byte +0x4E = competitors / 4
+ * (+0x4C / +0x4D follow it on screen); A copies 4 * it to u16 0x800AAABC.
+ * The entry order: u16 wrestler ids at 0x800BEA00 (first four = the picks). */
+#define RR_NUMBER_OBJ     0x8015A36Cu
+#define RR_ENTRANTS       0x800BEA00u
 #define SETUP_SLOT(i)     (0x800AAAD0u + 12u * (i))  /* +0 wrestler id (u16, 0xFFxx = not picked) */
 #define SLOT_HUMAN        1              /* slot +3 before Superstar Select: controller */
 #define SLOT_CPU          0
@@ -128,10 +134,13 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 #define SCREEN_SINGLE_PLAY  0x03
 #define SCREEN_EX_MATCH     0x07         /* Exhibition MATCH tab */
 #define SCREEN_EX_PLAYER    0x06         /* Exhibition PLAYER tab */
+#define SCREEN_RR_NUMBER    0x09         /* Royal Rumble NUMBER tab (number of competitors) */
 #define SCREEN_LOADING      0x19         /* "Single Match / A VS B" loading screen */
 #define SCREEN_SELECT       0x1A         /* Superstar Select (picker 26) */
 #define SCREEN_SELECT_2     0x1B         /* Superstar Select, picker 27 */
 #define SCREEN_RESULT       0x1D
+#define SCREEN_RESULT_MULTI 0x1C         /* the Royal Rumble's result screen */
+#define IS_RESULT(s)        ((s) == SCREEN_RESULT || (s) == SCREEN_RESULT_MULTI)
 #define SCREEN_MATCH        0x2A
 #define NEXT_SCREEN       0x801596C0u    /* u16 screen the loading transition goes to */
 #define WRESTLER_TABLE    0x800471C4u    /* [n] (16 bytes): pointer to the record, +0 u16 id */
@@ -144,6 +153,8 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 static uint8_t dstate, dwatch, seen_result, dresults, dlast_screen;
 static USetup  dsetup;                 /* the match being staged */
 static UGameResult dlast;              /* its latest result values, read while it is on screen */
+static uint16_t dlast_id[4];           /* who held each place then (Royal Rumble: entrants rotate) */
+static uint8_t dprev_result[4];        /* Royal Rumble: last frame's result bytes */
 static uint8_t dlast_valid, dseen_zero;
 static uint8_t dsaved_champion[2], darena;
 static uint32_t dt0, dnext;
@@ -209,7 +220,8 @@ static void move_partner_cursor(uint8_t screen)
     unsigned p, c, cur;
     if (filled != dfilled) {
         dfilled = (uint8_t)filled;
-        dmove = dsetup.tag && (filled == 1 || filled == 3);
+        dmove = (dsetup.tag && (filled == 1 || filled == 3)) ||
+                (dsetup.preset_each && filled > 0 && filled < dsetup.n_slots);
         dnext = frames + 30;                   /* let the confirm settle */
     }
     if (!dmove || frames < dnext) return;
@@ -367,6 +379,7 @@ static void director_start(int watch)
     keep_rules();
     dlast_valid = 0;
     dseen_zero = 0;
+    dprev_result[0] = dprev_result[1] = dprev_result[2] = dprev_result[3] = 0;
     dlast_screen = 0xFF;
     dfilled = 0;
     dmove = 0;
@@ -422,6 +435,29 @@ static int dlast_won(void)
     return 0;
 }
 
+/* Royal Rumble entry order: the four picks, then Universe's entrants (any
+ * the player picked are left out), written while the picks are done */
+static void write_rumble_order(void)
+{
+    uint8_t picks[4];
+    int i, k, n = 0;
+    uint8_t screen = RAM8(GAME_SCREEN);
+    if (!dsetup.rumble_n || slots_filled() < dsetup.n_slots) return;
+    if (screen != SCREEN_SELECT && screen != SCREEN_SELECT_2 && screen != SCREEN_LOADING &&
+        screen != SCREEN_MATCH)
+        return;                            /* (the result screen reuses the slots) */
+    actual_wrestlers(picks);
+    for (i = 0; i < 4; i++) {
+        if (!picks[i]) picks[i] = dsetup.rumble[i];
+        RAM16(RR_ENTRANTS + 2u * (unsigned)n++) = game_id(picks[i]);
+    }
+    for (i = 0; i < dsetup.rumble_n && n < dsetup.rumble_n; i++) {
+        uint8_t w = dsetup.rumble[i];
+        for (k = 0; k < 4 && picks[k] != w; k++) {}
+        if (k == 4) RAM16(RR_ENTRANTS + 2u * (unsigned)n++) = game_id(w);
+    }
+}
+
 /* Backing out of Superstar Select (B) would go to Exhibition's MATCH tab:
  * the transition's target screen is changed to the Single Play page instead,
  * and Universe reopens under the cover. */
@@ -448,9 +484,15 @@ static void director_tick(void)
          * PLAYER choice) -> PLAYER tab: Watch or 1P is set and START
          * ("Decision") goes straight to Superstar Select. */
         if (t >= 60) RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;  /* restore the menu item */
-        if (screen == SCREEN_EX_MATCH || screen == SCREEN_EX_PLAYER) {
+        if (screen == SCREEN_EX_MATCH || screen == SCREEN_EX_PLAYER ||
+            screen == SCREEN_RR_NUMBER) {
             if (screen == SCREEN_EX_MATCH) {
                 RAM8(EX_MATCH_CURSOR) = dsetup.match_item;  /* Single, Tag, ... */
+            } else if (screen == SCREEN_RR_NUMBER) {
+                uint32_t obj = RAM32(RR_NUMBER_OBJ);
+                if (obj >= 0x80100000u && obj < 0x80400000u)
+                    RAM8(obj + 0x4C) = RAM8(obj + 0x4D) = RAM8(obj + 0x4E) =
+                        (uint8_t)(dsetup.rumble_n / 4);
             } else {
                 set_player_mode();                     /* Watch or 1P vs CPU */
                 set_controllers();
@@ -459,7 +501,7 @@ static void director_tick(void)
             }
             if (screen != dlast_screen) dnext = frames + 6;  /* let the tab settle first */
             if (frames >= dnext) {
-                press(screen == SCREEN_EX_MATCH ? B_A : B_START);
+                press(screen == SCREEN_EX_PLAYER ? B_START : B_A);
                 dnext = frames + 20;
             }
         }
@@ -483,6 +525,7 @@ static void director_tick(void)
         set_arena();
         set_rules();
         write_belt();
+        write_rumble_order();
         if (backed_out()) break;
         move_partner_cursor(screen);
         if (screen == SCREEN_MATCH) {
@@ -498,7 +541,22 @@ static void director_tick(void)
     case D_MATCH: {
         int i;
         if (backed_out()) break;
-        if (screen == SCREEN_MATCH && !(dlast_valid && dseen_zero && dlast_won())) {
+        write_rumble_order();
+        /* Royal Rumble: a 4 also marks whoever made an elimination, so the
+         * winner is whoever held the latest 4 (the last elimination) */
+        if (screen == SCREEN_MATCH && dsetup.rumble_n && dseen_zero) {
+            for (i = 0; i < 4; i++) {
+                uint8_t r = RAM8(RESULT(i));
+                if (r == 4 && dprev_result[i] != 4) {    /* a new 4 */
+                    int k;
+                    for (k = 0; k < 4; k++) dlast.result[k] = (uint8_t)(k == i ? 4 : 0);
+                    dlast_id[i] = RAM16(SLOT_ID(i));
+                }
+                dprev_result[i] = r;
+            }
+        }
+        if (screen == SCREEN_MATCH && !(dlast_valid && dseen_zero && dlast_won()) &&
+            !(dsetup.rumble_n && dseen_zero)) {
             /* the per-slot values, kept from the bell on (a 4 after the
              * match started at 0): the game clears them a few seconds later
              * and the result screen reuses them; falls only ever go up */
@@ -506,6 +564,7 @@ static void director_tick(void)
             for (i = 0; i < 4; i++) {
                 uint8_t f = i < dsetup.n_slots ? RAM8(FALLS(i)) : 0;
                 dlast.result[i] = i < dsetup.n_slots ? RAM8(RESULT(i)) : 0;
+                dlast_id[i] = RAM16(SLOT_ID(i));
                 if (dlast.result[i]) zero = 0;
                 if (!dseen_zero || f > dlast.falls[i]) dlast.falls[i] = f;
             }
@@ -516,16 +575,24 @@ static void director_tick(void)
          * winner (4) from the match, how it ended from the finish flags
          * (0 until the match ends); no winner is a draw (time limit, double
          * count-out, Ironman level on falls) */
-        if (screen == SCREEN_RESULT && dlast_valid) {
+        if (IS_RESULT(screen) && dlast_valid) {
             uint32_t f = RAM32(FINISH_FLAGS);
             int won = dseen_zero && dlast_won();
             if (won || f) {
                 dlast.method = won ? game_method(f) : U_WIN_DRAW;
                 if (!won) for (i = 0; i < 4; i++) dlast.result[i] = 0;
                 actual_wrestlers(dlast.game_n);
+                dlast.rumble_winner = 0;
+                for (i = 0; i < 4 && won; i++)
+                    if (dlast.result[i] == 4) dlast.rumble_winner = game_number(dlast_id[i]);
                 us_match_result(&dlast);
                 dresults++;
             }
+            dlast_valid = 0;
+            dstate = D_RETURN;
+            dt0 = frames;
+        } else if (screen == SCREEN_MULTI_PLAY || screen == SCREEN_SINGLE_PLAY) {
+            seen_result = 0;                   /* back on the menus without a result */
             dlast_valid = 0;
             dstate = D_RETURN;
             dt0 = frames;
@@ -540,10 +607,11 @@ static void director_tick(void)
          * (its result replaces this one). Exit asks for the Multi Play page
          * of the main menu; it is changed to Single Play, where Universe
          * is, and the Universe screen is shown as soon as the menu is up. */
-        if (screen == SCREEN_RESULT) seen_result = 1;
+        if (IS_RESULT(screen)) seen_result = 1;
         if (seen_result && (screen == SCREEN_LOADING || screen == SCREEN_MATCH)) {
             dlast_valid = 0;                           /* Rematch */
             dseen_zero = 0;
+            dprev_result[0] = dprev_result[1] = dprev_result[2] = dprev_result[3] = 0;
             dt0 = frames;
             dstate = D_INTRO;
             break;
@@ -620,6 +688,7 @@ static void enter_universe(void)
     volatile Mailbox *mb = MAILBOX;
     universe_mode = 1;
     us_test_stip(mb->test_stip);
+    us_test_rumble(mb->test_rumble);
     us_enter(mb->test_seed ? mb->test_seed : cp0_count());
 }
 

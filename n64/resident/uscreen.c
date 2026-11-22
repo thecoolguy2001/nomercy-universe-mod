@@ -104,8 +104,9 @@ static void small(void *holder, const char *s, int y) { text_scaled(holder, s, y
 
 /* ---- public ---- */
 
-static uint32_t test_stip;
+static uint32_t test_stip, test_rumble;
 void us_test_stip(uint32_t stip) { test_stip = stip; }
+void us_test_rumble(uint32_t n) { test_rumble = n; }
 
 /* Test: every match of the card that allows it gets the stipulation (a
  * guest referee is someone not on the card) */
@@ -133,6 +134,7 @@ static void force_stip(void)
 
 void us_enter(uint32_t seed)
 {
+    int i;
     if (!started) {
         demo_universe(&U, seed | 1);
         started = 1;
@@ -140,6 +142,10 @@ void us_enter(uint32_t seed)
     if (!show_ready) {
         u_book_show(&U, &SHOW);
         force_stip();
+        for (i = 0; i < SHOW.count; i++)          /* test: short Rumbles */
+            if (SHOW.m[i].format == U_FMT_RUMBLE && test_rumble >= 4 &&
+                test_rumble < SHOW.m[i].n_entrants)
+                SHOW.m[i].n_entrants = (uint8_t)(test_rumble & ~3u);
         show_ready = 1;
         cursor = 0;
     }
@@ -158,6 +164,16 @@ static void finish_show(void)
             s_init(&s, headline[n_headlines++], LINE_LEN);
             s_add(&s, "NEW CHAMPION: ");
             s_add(&s, side(m, m->winner));
+        }
+        if (m->format == U_FMT_RUMBLE && m->done && m->winner < m->n_entrants &&
+            n_headlines < MAX_LINES) {
+            s_init(&s, headline[n_headlines++], LINE_LEN);
+            s_add(&s, "ROYAL RUMBLE WINNER: ");
+            s_add(&s, side(m, m->winner));
+            if (U.rumble_winner == m->entrant[m->winner] && n_headlines < MAX_LINES) {
+                s_init(&s, headline[n_headlines++], LINE_LEN);
+                s_add(&s, "Title shot at WrestleMania");
+            }
         }
         if (m->rivalry_started && n_headlines < MAX_LINES) {
             s_init(&s, headline[n_headlines++], LINE_LEN);
@@ -195,6 +211,7 @@ static const uint8_t FMT_SLOTS[U_FMT_COUNT] = {2, 4, 3, 3};
  * 4 Cage (1 on 1); Ladder / Ironman 0-3 the same formats; Guest Referee
  * 0 Single, 1 Triple Threat, 2 Handicap. */
 #define MODE_EXHIBITION 0x02
+#define MODE_RUMBLE     0x04            /* MATCH ("ORDER") item 0: Random */
 #define MODE_REFEREE    0x0D
 #define MODE_LADDER     0x0E
 #define MODE_IRONMAN    0x0F
@@ -206,6 +223,12 @@ static const uint8_t REFEREE_ITEM[U_FMT_COUNT] = {0, 0, 1, 2};
 static const uint8_t PLAYER_1P[U_FMT_COUNT]      = {1, 5, 3, 3};
 static const uint8_t PLAYER_WATCH[U_FMT_COUNT]   = {3, 7, 6, 5};
 static const uint8_t PLAYER_REFEREE[U_FMT_COUNT] = {3, 0, 6, 5};
+
+/* Royal Rumble: PLAYER 3 = "1P vs CPU vs CPU vs CPU" (the player is the
+ * first entrant), 7 = Watch; the game's own Rumble rules (over the top). */
+#define RUMBLE_PLAYER_1P    3
+#define RUMBLE_PLAYER_WATCH 7
+static const uint8_t RUMBLE_RULES[US_RULES] = {0x0D, 5, 2, 0, 0, 1, 0, 1, 0, 0, 0, 1};
 
 /* Every match type Universe books can be played (notes/universe-plan.md:
  * supported combinations); Guest Referee only as the referee (no Watch). */
@@ -277,10 +300,40 @@ int us_pending_watch(void) { return pending_watch; }
  * 4 Hardcore, 5 Light Heavyweight, 6 Women's. */
 static const int8_t GAME_BELT[] = { 0, 2, 1, 3, -1, -1 };
 
+/* The Royal Rumble: the player confirms (or changes) the first four
+ * entrants on Superstar Select; the director writes the rest of the entry
+ * order into the game. */
+static void rumble_setup(const UMatch *m, USetup *st)
+{
+    int i;
+    st->mode = MODE_RUMBLE;
+    st->match_item = 0;
+    st->player = pending_watch ? RUMBLE_PLAYER_WATCH : RUMBLE_PLAYER_1P;
+    st->n_slots = 4;
+    st->tag = 0;
+    st->preset_each = 1;
+    for (i = 0; i < 4; i++) {
+        st->wrestler[i] = demo_game_index(m->entrant[i]);
+        st->human[i] = (uint8_t)(i == 0 && !pending_watch);
+    }
+    for (i = 0; i < US_RULES; i++) st->rules[i] = RUMBLE_RULES[i];
+    st->rumble_n = m->n_entrants;
+    for (i = 0; i < m->n_entrants && i < US_RUMBLE_MAX; i++)
+        st->rumble[i] = demo_game_index(m->entrant[i]);
+    st->belt = -1;
+    st->champion[0] = st->champion[1] = 0;
+}
+
 void us_pending_setup(USetup *st)
 {
     const UMatch *m = &SHOW.m[pending];
     int i, ref = m->stip == U_STIP_REFEREE, n = FMT_SLOTS[m->format];
+    st->preset_each = 0;
+    st->rumble_n = 0;
+    if (m->format == U_FMT_RUMBLE) {
+        rumble_setup(m, st);
+        return;
+    }
     switch (m->stip) {
     case U_STIP_LADDER:  st->mode = MODE_LADDER;  st->match_item = m->format; break;
     case U_STIP_IRONMAN: st->mode = MODE_IRONMAN; st->match_item = m->format; break;
@@ -334,6 +387,11 @@ static uint8_t universe_wrestler(uint8_t game_n)
 static int in_match(const UMatch *m, uint8_t id)
 {
     int k;
+    if (m->format == U_FMT_RUMBLE) {
+        for (k = 0; k < m->n_entrants; k++)
+            if (m->entrant[k] == id) return 1;
+        return 0;
+    }
     for (k = 0; k < 6; k++)
         if (m->side[k / 2][k % 2] == id) return 1;
     return 0;
@@ -352,6 +410,22 @@ void us_match_result(const UGameResult *r)
     uint8_t method;
     if (pending == U_NONE) return;
     m = &SHOW.m[pending];
+    if (m->format == U_FMT_RUMBLE) {
+        /* the winner by wrestler number; someone the player picked instead
+         * of a card entrant takes that entrant's place */
+        uint8_t w = universe_wrestler(r->rumble_winner);
+        for (i = 0; i < 4 && i < m->n_entrants; i++) {
+            uint8_t p = universe_wrestler(r->game_n[i]);
+            if (p != U_NONE && p != m->entrant[i] && !in_match(m, p)) m->entrant[i] = p;
+        }
+        for (i = 0; i < m->n_entrants; i++)
+            if (m->entrant[i] == w) {
+                m->done = 0;
+                u_set_result(m, (uint8_t)i, U_WIN_RUMBLE);
+                break;
+            }
+        return;
+    }
     first = m->stip == U_STIP_REFEREE;           /* slot 0 is the referee */
     n = FMT_SLOTS[m->format];
     for (i = 0; i < n; i++)
@@ -524,7 +598,14 @@ void us_draw(void *holder)
         if (m->title != U_NONE) s_add(&s, U.t[m->title].name);
         text_scaled(holder, line[9], 172, s.n > 34 ? 0xA8 : s.n > 28 ? 0xC0 : 0xD8);
         s_init(&s, line[10], LINE_LEN);
-        if (m->done && m->method == U_WIN_DRAW) {
+        if (m->format == U_FMT_RUMBLE) {
+            if (m->done && m->winner < m->n_entrants) {
+                s_add(&s, "Winner came in at number ");   /* ('#' is a control code) */
+                s_num(&s, (unsigned)m->winner + 1u);
+            } else {
+                s_add(&s, "Prize: title shot at WrestleMania");
+            }
+        } else if (m->done && m->method == U_WIN_DRAW) {
             s_add(&s, "Draw");
         } else if (m->done) {
             s_add(&s, "Won by ");

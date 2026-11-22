@@ -431,3 +431,46 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
 - Universe records every match when the result screen appears: result
   bytes and falls as last seen on the match screen, finish from the flags,
   no winner = draw.
+
+## Royal Rumble mode (plan step 3, 2026-11-22)
+- Multi Play item 1 = Royal Rumble, mode 0x04 (item 2 Pay Per View 0x06,
+  item 3 King of the Ring 0x08). Tabs: ORDER (screen 07; 0 Random,
+  1 Select, 2 Team Battle), NUMBER (screen 09), PLAYER (06), ARENA (05),
+  RULES (15). Match-type word bit 0x200, rules slot 13; default RULES row
+  0D 05 02 00 00 01 00 01 00 00 00 01 (count out row: Lose / Hardcore / No).
+- NUMBER: the tab object (pointer at 0x8015A36C) byte +0x4E = competitors / 4
+  (4..40, steps of 4; +0x4C / +0x4D follow it); A on the tab (0x8012FF24)
+  sets u16 0x800AAABC = 4 * it, START copies it to the pick count 0x800AAAB2.
+  Writing 10 there gives a 40-man Rumble ("1/40" on Superstar Select).
+- PLAYER values: 3 / 4 / 5 / 6 = 1P as entrant 1 / 2 / 3 / 4 (rest CPU),
+  7 = Watch.
+- ORDER Select: every entrant picked on Superstar Select (duplicates
+  allowed). ORDER Random: the first four are picked, the game fills the rest.
+- Entry order: u16 wrestler ids at 0x800BEA00 (2 * competitors bytes); the
+  first four are also the setup slots 0x800AAAD0. Filled when the picks are
+  done; read during the match.
+- The setup slots' ids alone do not change who wrestles: overwriting them
+  after the picks changed the models but the names stayed the picked ones
+  (loading screen and entrance captions), so the first four must be real
+  picks (Universe presets the cursors).
+- Superstar Select page table 0x80047150 [page][12]: pages 0-4 SUPERSTARS
+  1-5 (45 men), 5 LADIES, 6 HIDDEN 1, 7-9 numbers 65-82 (locked on a fresh
+  save; R skips them). Wrestler records (4 attires x 20 bytes): +0 id,
+  +8 u16 weight - 100, +0x0A / +0x0C name text ids.
+- Entrants 5+ come in only when someone is eliminated (four in the ring at
+  most); the HUD's top number counts those not eliminated yet. CPU Rumbles
+  are slow (a 4-man one went ~15 game minutes).
+- Writing the entry order works: with 0x800BEA08.. = Austin, Undertaker,
+  Kane, Mankind, Steve Austin came in as entrant 5 (original ROM test).
+  A run with hidden number 59 as entrant 5 froze at the first elimination
+  (locked hidden wrestlers may not load - checking).
+- Per place (stride 0x358): u16 id of who is in it at 0x8015AF50 (result
+  byte + 0x0B); in a Rumble it changes as entrants replace the eliminated.
+  The 4-man Rumble ended with result bytes 1 / 4 and finish flags 0x4012
+  (pin); the winner is whoever holds the place with the 4.
+- A result byte of 4 also appears mid-Rumble on whoever made an
+  elimination (urr8: 02 / 04 after the first elimination); the winner is the
+  place whose byte turns 4 last (urr4b end: 03 04 03 03). Universe tracks
+  new 4s and reads that place's id.
+- The Royal Rumble's result screen is 0x1C (not 0x1D); Exit there goes to
+  the Multi Play page (02) like the others.

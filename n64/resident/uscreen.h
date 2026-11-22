@@ -3,6 +3,7 @@
 #include <stdint.h>
 void us_enter(uint32_t seed);          /* create/continue the universe, book a card */
 void us_test_stip(uint32_t stip);      /* test: 1 + U_STIP_* forced on new cards (0 = off) */
+void us_test_rumble(uint32_t n);       /* test: Royal Rumbles cut to n entrants (0 = off) */
 int  us_input(uint16_t pressed);       /* 0 = leave, 1 = stay, 2 = play/watch the pending match */
 void us_draw(void *holder);
 int  us_show_arena(void);              /* No Mercy arena of the current show */
@@ -11,6 +12,7 @@ void us_cover(int on);                 /* 1: cover the whole screen (menu being 
 int  us_pending_watch(void);           /* 1 = Watch (CPU vs CPU), 0 = Play */
 
 #define US_RULES 12
+#define US_RUMBLE_MAX 40
 /* What to set up in the game for the match to play */
 typedef struct {
     uint8_t mode;           /* game mode the Universe item opens (Exhibition, Ladder, ...) */
@@ -23,11 +25,15 @@ typedef struct {
     uint8_t rules[US_RULES];/* the RULES tab row the match is played with */
     int     belt;           /* game belt on the line, -1 = none */
     uint8_t champion[2];    /* its champion's wrestler number(s), tag: both (0 = vacant) */
+    uint8_t preset_each;    /* the cursor is moved for every pick (same picker back to back) */
+    uint8_t rumble_n;       /* Royal Rumble: entrants (4-40), 0 = not a Rumble */
+    uint8_t rumble[US_RUMBLE_MAX]; /* their wrestler numbers in entry order */
 } USetup;
 void us_pending_setup(USetup *st);
 
 /* How the game's match ended */
 typedef struct {
+    uint8_t rumble_winner;  /* Royal Rumble: the winner's wrestler number (0 = unknown) */
     uint8_t result[4];      /* game result byte per slot: 4 = won */
     uint8_t game_n[4];      /* No Mercy wrestler numbers that actually wrestled (0 = unknown) */
     uint8_t method;         /* U_WIN_* read from the game */

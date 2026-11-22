@@ -1,7 +1,6 @@
 /* No Mercy Universe engine - see universe.h for the design rules. */
 #include "universe.h"
 
-#define U_SAVE_VERSION 2
 
 /* ---------- small helpers (no libc) ---------- */
 
@@ -53,11 +52,16 @@ void u_next_show(const Universe *u, uint8_t *kind, uint8_t *brand)
     }
 }
 
+int u_ppv_index(const Universe *u)
+{
+    return (u->week / U_PPV_EVERY + 11) % 12;
+}
+
 const char *u_show_name(const Universe *u)
 {
     if (u->slot == U_BRAND_RAW) return "Raw Is War";
     if (u->slot == U_BRAND_SMACKDOWN) return "SmackDown!";
-    return PPV_NAMES[(u->week / U_PPV_EVERY - 1) % 12];
+    return PPV_NAMES[u_ppv_index(u)];
 }
 
 static void advance_calendar(Universe *u)
@@ -82,12 +86,13 @@ const char *u_stip_name(uint8_t stip)
 const char *u_format_name(uint8_t format)
 {
     static const char *const N[U_FMT_COUNT] = {
-        "Single", "Tag Team", "Triple Threat", "Handicap"};
+        "Single", "Tag Team", "Triple Threat", "Handicap", "Royal Rumble"};
     return format < U_FMT_COUNT ? N[format] : "";
 }
 
 int u_match_sides(const UMatch *m)
 {
+    if (m->format == U_FMT_RUMBLE) return m->n_entrants;
     return m->format == U_FMT_TRIPLE ? 3 : 2;
 }
 
@@ -103,6 +108,9 @@ int u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap
     int n = 0;
     if (cap <= 0) return 0;
     buf[0] = 0;
+    if (m->format == U_FMT_RUMBLE)
+        return side >= 0 && side < m->n_entrants
+            ? append(buf, 0, cap, u->w[m->entrant[side]].name) : 0;
     if (side < 0 || side >= 3) return 0;
     if (m->format == U_FMT_TAG && m->team[side] != U_NONE)
         return append(buf, 0, cap, u->tm[m->team[side]].name);
@@ -120,6 +128,18 @@ int u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int 
     int n = 0, k, first = 1, sides = u_match_sides(m);
     if (cap <= 0) return 0;
     buf[0] = 0;
+    if (m->format == U_FMT_RUMBLE) {
+        char num[4] = {0, 0, 0, 0};
+        if (result && m->done && m->winner < m->n_entrants) {
+            n = append(buf, 0, cap, u->w[m->entrant[m->winner]].name);
+            return append(buf, n, cap, " wins the Royal Rumble");
+        }
+        num[0] = (char)('0' + m->n_entrants / 10 % 10);
+        num[1] = (char)('0' + m->n_entrants % 10);
+        n = append(buf, 0, cap, "Royal Rumble - ");
+        n = append(buf, n, cap, num[0] == '0' ? num + 1 : num);
+        return append(buf, n, cap, " men");
+    }
     if (result && m->done && m->winner == U_NONE) {      /* a draw */
         for (k = 0; k < sides; k++) {
             if (k) n = append(buf, n, cap, " vs ");
@@ -156,6 +176,7 @@ const char *u_method_name(uint8_t method, uint8_t stip)
         return stip == U_STIP_LADDER ? "climbing the ladder" : "escaping the cage";
     if (method == U_WIN_FALLS) return "most falls";
     if (method == U_WIN_DRAW) return "draw";
+    if (method == U_WIN_RUMBLE) return "last man in the ring";
     return method < U_WIN_SPECIAL ? N[method] : "?";
 }
 
@@ -164,7 +185,8 @@ int u_method_allowed(uint8_t stip, uint8_t method)
 {
     if (method == U_WIN_DRAW) return stip < U_STIP_COUNT;
     switch (stip) {
-    case U_STIP_NORMAL:
+    case U_STIP_NORMAL:      /* (U_WIN_RUMBLE: Royal Rumble format only) */
+        return method <= U_WIN_DQ || method == U_WIN_RUMBLE;
     case U_STIP_REFEREE: return method <= U_WIN_DQ;
     case U_STIP_NODQ:    return method == U_WIN_PINFALL || method == U_WIN_SUBMISSION;
     case U_STIP_CAGE:    return method == U_WIN_PINFALL || method == U_WIN_SUBMISSION ||
@@ -178,6 +200,7 @@ int u_method_allowed(uint8_t stip, uint8_t method)
 int u_stip_supported(uint8_t format, uint8_t stip)
 {
     if (format >= U_FMT_COUNT || stip >= U_STIP_COUNT) return 0;
+    if (format == U_FMT_RUMBLE) return stip == U_STIP_NORMAL;
     if (stip == U_STIP_CAGE) return format == U_FMT_SINGLE;
     if (stip == U_STIP_REFEREE) return format != U_FMT_TAG;
     return 1;
@@ -190,6 +213,7 @@ void u_init(Universe *u, uint32_t seed)
     u_zero(u, sizeof *u);
     u->rng = seed ? seed : 0x4E4D5531u; /* xorshift must not start at 0 */
     u->week = 1;
+    u->rumble_winner = U_NONE;
 }
 
 int u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
@@ -206,6 +230,13 @@ int u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
     w->overall = (uint8_t)clamp(overall, 0, 100);
     w->active = 1;
     return u->n_wrestlers++;
+}
+
+int u_add_fillin(Universe *u, const char *name, uint8_t game_slot, uint8_t overall)
+{
+    int id = u_add_wrestler(u, name, game_slot, U_BRAND_RAW, U_FACE, overall);
+    if (id >= 0) u->w[id].role = U_ROLE_FILLIN;
+    return id;
 }
 
 int u_add_team(Universe *u, const char *name, uint8_t a, uint8_t b)
@@ -320,12 +351,12 @@ static int team_on_brand(const Universe *u, uint8_t team, uint8_t brand)
     return brand == U_NONE || u->w[t->a].brand == brand;
 }
 
-/* Active wrestlers of a brand (U_NONE = all), best first. */
+/* Active regular wrestlers of a brand (U_NONE = all), best first. */
 int u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max)
 {
     int n = 0, i, j;
     for (i = 0; i < u->n_wrestlers && n < max; i++) {
-        if (!u->w[i].active) continue;
+        if (!u->w[i].active || u->w[i].role != U_ROLE_REGULAR) continue;
         if (brand != U_NONE && u->w[i].brand != brand) continue;
         out[n++] = (uint8_t)i;
     }
@@ -549,6 +580,39 @@ static int pick_contender(const Booker *b, const uint8_t *rank, int n)
     return -1;
 }
 
+/* Royal Rumble entrants: every healthy regular except the World champion
+ * (best-ranked first if there are more than U_RUMBLE_MAX); fill-ins only
+ * when fewer than U_RUMBLE_MAX regulars are available; then a multiple of 4
+ * (No Mercy's Rumble sizes) in random entry order. */
+static void book_rumble(Booker *b, const uint8_t *rank, int n_rank)
+{
+    Universe *u = b->u;
+    uint8_t pool[U_MAX_WRESTLERS], fill[U_MAX_WRESTLERS];
+    uint8_t champ = u->n_titles && u->t[0].kind == U_TITLE_SINGLES ? u_title_holder(u, 0) : U_NONE;
+    int np = 0, nf = 0, i, n;
+    UMatch *m;
+    for (i = 0; i < n_rank && np < U_RUMBLE_MAX; i++)
+        if (rank[i] != champ && !u->w[rank[i]].injured_weeks) pool[np++] = rank[i];
+    for (i = 0; i < u->n_wrestlers; i++)
+        if (u->w[i].role == U_ROLE_FILLIN && u->w[i].active && !u->w[i].injured_weeks)
+            fill[nf++] = (uint8_t)i;
+    while (np < U_RUMBLE_MAX && nf) {         /* random fill-ins */
+        int k = (int)u_rand(u, (uint32_t)nf);
+        pool[np++] = fill[k];
+        fill[k] = fill[--nf];
+    }
+    n = np - np % 4;
+    if (n < 4 || !(m = new_match(b, U_FMT_RUMBLE, U_NONE, U_STIP_NORMAL))) return;
+    for (i = n - 1; i > 0; i--) {             /* entry order */
+        int k = (int)u_rand(u, (uint32_t)(i + 1));
+        uint8_t t = pool[i];
+        pool[i] = pool[k];
+        pool[k] = t;
+    }
+    m->n_entrants = (uint8_t)n;
+    for (i = 0; i < n; i++) m->entrant[i] = pool[i];
+}
+
 /* Interim stipulations, so every match type turns up until the booking
  * step of notes/universe-plan.md (step 8) brings the real rules: weekly TV
  * hot feuds are sometimes a Cage or No DQ match; PPV hot feuds get Ladder
@@ -623,12 +687,16 @@ void u_book_show(Universe *u, UShow *s)
     b.max = ppv ? U_PPV_MATCHES : U_WEEKLY_MATCHES;
     for (i = 0; i < U_MAX_WRESTLERS; i++) {
         const UWrestler *w = &u->w[i];
-        b.used[i] = (uint8_t)(i >= u->n_wrestlers || !w->active ||
+        b.used[i] = (uint8_t)(i >= u->n_wrestlers || !w->active || w->role != U_ROLE_REGULAR ||
                               w->injured_weeks > 0 ||
                               (s->brand != U_NONE && w->brand != s->brand));
     }
     n = u_rankings(u, s->brand, rank, U_MAX_WRESTLERS);
     nt = u_team_rankings(u, s->brand, trank, U_MAX_TEAMS);
+
+    /* The Royal Rumble PPV's main event (booked first: the card is
+     * reversed at the end). Its entrants may also wrestle earlier. */
+    if (ppv && u_ppv_index(u) == 0) book_rumble(&b, rank, n);
 
     for (t = 0; t < u->n_titles; t++) {
         UTitle *ti = &u->t[t];
@@ -646,6 +714,14 @@ void u_book_show(Universe *u, UShow *s)
             continue;
         }
         if (b.used[h]) continue;
+        /* WrestleMania: the World champion faces the Royal Rumble winner */
+        if (ppv && t == 0 && u_ppv_index(u) == 2 && u->rumble_winner < u->n_wrestlers &&
+            u->rumble_winner != h && !b.used[u->rumble_winner]) {
+            int ri = find_rivalry(u, h, u->rumble_winner);
+            book_singles(&b, h, u->rumble_winner, (uint8_t)t,
+                         ri >= 0 ? (uint8_t)ri : U_NONE, U_STIP_NORMAL);
+            continue;
+        }
         {
             /* the champion's hottest feud, unless the rival holds a singles
              * title too (they must be free to defend their own) */
@@ -797,9 +873,36 @@ static uint8_t sim_winner(Universe *u, const UMatch *m)
     }
 }
 
+/* Royal Rumble: the better and the later an entrant, the likelier the win */
+static uint8_t sim_rumble(Universe *u, const UMatch *m)
+{
+    uint32_t w[U_RUMBLE_MAX], sum = 0, roll;
+    int i;
+    for (i = 0; i < m->n_entrants; i++) {
+        const UWrestler *x = &u->w[m->entrant[i]];
+        int r = clamp(x->overall + x->momentum / 4 - 45, 2, 60);
+        w[i] = (uint32_t)(r * r) * (uint32_t)(m->n_entrants + 2 * i);
+        sum += w[i];
+    }
+    roll = u_rand(u, sum);
+    for (i = 0; i < m->n_entrants - 1; i++) {
+        if (roll < w[i]) return (uint8_t)i;
+        roll -= w[i];
+    }
+    return (uint8_t)(m->n_entrants - 1);
+}
+
 void u_sim_match(Universe *u, UMatch *m)
 {
     uint32_t roll;
+
+    if (m->format == U_FMT_RUMBLE) {
+        m->winner = m->n_entrants ? sim_rumble(u, m) : U_NONE;
+        m->method = U_WIN_RUMBLE;
+        m->source = U_SRC_SIMULATED;
+        m->done = 1;
+        return;
+    }
 
     m->winner = sim_winner(u, m);
     roll = u_rand(u, 100);
@@ -834,7 +937,7 @@ void u_sim_match(Universe *u, UMatch *m)
 int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
 {
     if (winning_side >= u_match_sides(m) || method == U_WIN_FALLS ||
-        method == U_WIN_DRAW)
+        method == U_WIN_DRAW || (m->format == U_FMT_RUMBLE) != (method == U_WIN_RUMBLE))
         return -1;
     if (!u_method_allowed(m->stip, method)) return -1;
     m->winner = winning_side;
@@ -847,7 +950,7 @@ int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
 /* A match the player played ended without a winner */
 int u_set_draw(UMatch *m)
 {
-    if (m->stip >= U_STIP_COUNT) return -1;
+    if (m->stip >= U_STIP_COUNT || m->format == U_FMT_RUMBLE) return -1;
     m->winner = U_NONE;
     m->method = U_WIN_DRAW;
     m->source = U_SRC_PLAYED;
@@ -922,6 +1025,26 @@ static void apply_draw(Universe *u, UMatch *m, uint8_t *touched)
     }
 }
 
+/* The Royal Rumble winner earns a World title shot at WrestleMania (a
+ * fill-in winner gets the glory but no shot). Nobody else gets a loss. */
+static void apply_rumble(Universe *u, UMatch *m)
+{
+    uint8_t id;
+    if (m->winner >= m->n_entrants) return;
+    id = m->entrant[m->winner];
+    u->w[id].wins++;
+    add_momentum(&u->w[id], 15);
+    if (u->w[id].role == U_ROLE_REGULAR) u->rumble_winner = id;
+    if (u_rand(u, 100) < 4) {
+        uint8_t hurt = m->entrant[u_rand(u, m->n_entrants)];
+        if (u->w[hurt].role == U_ROLE_REGULAR && hurt != id) {
+            u->w[hurt].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
+            m->injured = hurt;
+            m->injury_weeks = u->w[hurt].injured_weeks;
+        }
+    }
+}
+
 static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched)
 {
     int W = m->winner, n = u_match_sides(m), L, k, ri, best_loser = -1;
@@ -933,6 +1056,10 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
     uint8_t losers[4];
     int nl = 0;
 
+    if (m->format == U_FMT_RUMBLE) {
+        apply_rumble(u, m);
+        return;
+    }
     if (m->method == U_WIN_DRAW || W >= n) {
         apply_draw(u, m, touched);
         return;
@@ -1027,7 +1154,7 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
 void u_apply_show(Universe *u, UShow *s)
 {
     uint8_t touched[U_MAX_RIVALRIES];
-    int i;
+    int i, wrestlemania = s->kind == U_SHOW_PPV && u_ppv_index(u) == 2;
 
     u_zero(touched, sizeof touched);
     if (u->slot == 0) /* a new week: injuries heal by one week */
@@ -1045,6 +1172,7 @@ void u_apply_show(Universe *u, UShow *s)
             u->w[r->b].brand == s->brand)
             r->intensity = (uint8_t)clamp(r->intensity - 10, 0, 100);
     }
+    if (wrestlemania) u->rumble_winner = U_NONE;   /* the shot is used (or lost) */
 
     advance_calendar(u);
 }
@@ -1107,6 +1235,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
     w16(&w, u->week);
     w8(&w, u->slot);
     w32(&w, u->rng);
+    w8(&w, u->rumble_winner);
     w8(&w, u->n_wrestlers);
     w8(&w, u->n_teams);
     w8(&w, u->n_titles);
@@ -1115,7 +1244,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
         wname(&w, x->name);
         w8(&w, x->game_slot); w8(&w, x->brand); w8(&w, x->align);
         w8(&w, x->overall); w8(&w, (uint8_t)x->momentum);
-        w8(&w, x->injured_weeks); w8(&w, x->active);
+        w8(&w, x->injured_weeks); w8(&w, x->active); w8(&w, x->role);
         w16(&w, x->wins); w16(&w, x->losses);
     }
     for (i = 0; i < U_MAX_TEAMS; i++) {
@@ -1169,11 +1298,12 @@ int u_load(Universe *u, const uint8_t *buf, int len)
     u->week = r16(&r);
     u->slot = r8(&r);
     u->rng = r32(&r);
+    u->rumble_winner = r8(&r);
     nw = u->n_wrestlers = r8(&r);
     nteams = u->n_teams = r8(&r);
     nt = u->n_titles = r8(&r);
     if (nw > U_MAX_WRESTLERS || nteams > U_MAX_TEAMS || nt > U_MAX_TITLES ||
-        u->slot > 2 || !u->rng)
+        u->slot > 2 || !u->rng || (u->rumble_winner != U_NONE && u->rumble_winner >= nw))
         return load_fail(u, -5);
 
     for (i = 0; i < U_MAX_WRESTLERS; i++) {
@@ -1181,9 +1311,10 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         rname(&r, x->name);
         x->game_slot = r8(&r); x->brand = r8(&r); x->align = r8(&r);
         x->overall = r8(&r); x->momentum = (int8_t)r8(&r);
-        x->injured_weeks = r8(&r); x->active = r8(&r);
+        x->injured_weeks = r8(&r); x->active = r8(&r); x->role = r8(&r);
         x->wins = r16(&r); x->losses = r16(&r);
-        if (i < nw && x->brand >= U_BRAND_COUNT) return load_fail(u, -6);
+        if (i < nw && (x->brand >= U_BRAND_COUNT || x->role > U_ROLE_FILLIN))
+            return load_fail(u, -6);
     }
     for (i = 0; i < U_MAX_TEAMS; i++) {
         UTeam *t = &u->tm[i];

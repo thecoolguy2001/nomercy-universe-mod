@@ -132,9 +132,10 @@ static int ask_result(const Universe *u, UMatch *m)
     uint8_t allowed[U_WIN_METHOD_COUNT];
     int na = 0, i;
     for (i = 0; i < U_WIN_METHOD_COUNT; i++)
-        if (i != U_WIN_DRAW && u_method_allowed(m->stip, (uint8_t)i)) allowed[na++] = (uint8_t)i;
+        if (i != U_WIN_DRAW && i != U_WIN_RUMBLE && u_method_allowed(m->stip, (uint8_t)i))
+            allowed[na++] = (uint8_t)i;
     int sides = u_match_sides(m);
-    if (m->stip == U_STIP_IRONMAN) return 0;   /* simulated (falls) */
+    if (m->stip == U_STIP_IRONMAN || m->format == U_FMT_RUMBLE) return 0;   /* simulated */
     for (;;) {
         printf("     Winner? 1 = %s, 2 = %s", side_name(u, m, 0), side_name(u, m, 1));
         if (sides == 3) printf(", 3 = %s", side_name(u, m, 2));

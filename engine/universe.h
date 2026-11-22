@@ -16,7 +16,7 @@
 
 #include <stdint.h>
 
-#define U_MAX_WRESTLERS  32
+#define U_MAX_WRESTLERS  80  /* the whole game roster fits (plan step 5) */
 #define U_MAX_TEAMS      8
 #define U_MAX_TITLES     6
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
@@ -26,6 +26,7 @@
 #define U_PPV_MATCHES    8
 #define U_PPV_EVERY      4   /* a PPV closes every 4th week */
 #define U_NAME_LEN       16  /* includes terminating zero */
+#define U_RUMBLE_MAX     40  /* Royal Rumble entrants (No Mercy: 4 to 40, steps of 4) */
 
 #define U_NONE           0xFF
 #define U_OPEN_WEEK      0xFFFF  /* reign still in progress */
@@ -40,6 +41,7 @@ enum {
     U_FMT_TAG,              /* 2 vs 2 (teams) */
     U_FMT_TRIPLE,           /* 1 vs 1 vs 1 */
     U_FMT_HANDICAP,         /* 1 (side 0) vs 2 (side 1) */
+    U_FMT_RUMBLE,           /* Royal Rumble: UMatch.entrant[], one "side" each */
     U_FMT_COUNT
 };
 
@@ -63,10 +65,15 @@ enum {
     U_WIN_FALLS,        /* Ironman: most falls (UMatch.falls) */
     U_WIN_DRAW,         /* no winner (UMatch.winner = U_NONE): time limit,
                            double count-out, Ironman level on falls */
+    U_WIN_RUMBLE,       /* last man left in the Royal Rumble */
     U_WIN_METHOD_COUNT
 };
 
 enum { U_SRC_SIMULATED = 0, U_SRC_PLAYED = 1 };
+/* Regular wrestlers are booked normally; fill-ins (non-regulars such as
+ * Vince McMahon or Jim Ross, and Chyna) only fill Royal Rumble spots when
+ * fewer than U_RUMBLE_MAX regulars are healthy. */
+enum { U_ROLE_REGULAR = 0, U_ROLE_FILLIN = 1 };
 
 typedef struct {
     char     name[U_NAME_LEN];
@@ -77,6 +84,7 @@ typedef struct {
     int8_t   momentum;      /* -100..100, changes with results */
     uint8_t  injured_weeks; /* 0 = healthy */
     uint8_t  active;        /* 0 = released / retired */
+    uint8_t  role;          /* U_ROLE_* */
     uint16_t wins;
     uint16_t losses;
 } UWrestler;
@@ -129,6 +137,8 @@ typedef struct {
     uint8_t method;
     uint8_t source;
     uint8_t falls[3];       /* Ironman: falls scored by each side */
+    uint8_t n_entrants;     /* Royal Rumble: entrant[] in entry order, winner = */
+    uint8_t entrant[U_RUMBLE_MAX]; /* the winner's index in it */
     /* consequences (filled by u_apply_show, for display) */
     uint8_t title_changed;
     uint8_t rivalry_started;
@@ -149,6 +159,7 @@ typedef struct {
     uint16_t  week;
     uint8_t   slot;         /* 0 = Raw, 1 = SmackDown, 2 = PPV */
     uint32_t  rng;
+    uint8_t   rumble_winner;  /* World title shot at the next WrestleMania, or U_NONE */
     uint8_t   n_wrestlers;
     uint8_t   n_teams;
     uint8_t   n_titles;
@@ -158,9 +169,10 @@ typedef struct {
     URivalry  r[U_MAX_RIVALRIES];
 } Universe;
 
+#define U_SAVE_VERSION 3      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
-#define U_SAVE_HEADER_BYTES   14
-#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 11)
+#define U_SAVE_HEADER_BYTES   15
+#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 12)
 #define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 7)
 #define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 5 + U_MAX_REIGNS * 6)
 #define U_SAVE_SIZE (U_SAVE_HEADER_BYTES \
@@ -173,6 +185,7 @@ typedef struct {
 void    u_init(Universe *u, uint32_t seed);
 int     u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
                        uint8_t brand, uint8_t align, uint8_t overall);
+int     u_add_fillin(Universe *u, const char *name, uint8_t game_slot, uint8_t overall);
 int     u_add_team(Universe *u, const char *name, uint8_t a, uint8_t b);
 int     u_add_title(Universe *u, const char *name, uint8_t brand, uint8_t kind,
                     uint8_t holder);
@@ -189,6 +202,7 @@ int     u_team_score(const Universe *u, uint8_t team);
 int     u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
 int     u_team_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
 uint32_t u_rand(Universe *u, uint32_t n);
+int     u_ppv_index(const Universe *u);  /* 0 Royal Rumble .. 11 Armageddon (next PPV) */
 void    u_next_show(const Universe *u, uint8_t *kind, uint8_t *brand);
 const char *u_show_name(const Universe *u);  /* "Raw Is War", "WrestleMania"... */
 const char *u_stip_name(uint8_t stip);

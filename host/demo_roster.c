@@ -55,9 +55,23 @@ static const uint8_t GAME_INDEX[] = {
     2, 3, 18, 14, 17, 20, 32, 31, 13, 12, 21, 6,
 };
 
+/* Fill-ins (plan: non-regulars who only fill Royal Rumble spots). Only
+ * Chyna's game number is confirmed so far; the McMahons, Paul Bearer, Jim
+ * Ross and the others are hidden wrestlers whose numbers come with the full
+ * roster (plan step 5). */
+static const struct {
+    const char *name;
+    uint8_t game_index, overall;
+} FILLINS[] = {
+    {"Chyna", 50, 74},
+};
+#define N_ROSTER (sizeof ROSTER / sizeof ROSTER[0])
+
 uint8_t demo_game_index(uint8_t id)
 {
-    return id < sizeof GAME_INDEX ? GAME_INDEX[id] : 0;
+    if (id < sizeof GAME_INDEX) return GAME_INDEX[id];
+    if (id - N_ROSTER < sizeof FILLINS / sizeof FILLINS[0]) return FILLINS[id - N_ROSTER].game_index;
+    return 0;
 }
 
 const char *demo_game_name(uint8_t id)
@@ -80,6 +94,9 @@ void demo_universe(Universe *u, uint32_t seed)
     hardys = u_add_team(u, "Hardy Boyz", 18, 19);
     nao    = u_add_team(u, "New Age Outlaws", 20, 21);
     (void)dud; (void)hardys; (void)nao;
+
+    for (i = 0; i < sizeof FILLINS / sizeof FILLINS[0]; i++)
+        u_add_fillin(u, FILLINS[i].name, U_NONE, FILLINS[i].overall);
 
     u_add_title(u, "WWF Title", R, U_TITLE_SINGLES, 1);        /* Triple H */
     u_add_title(u, "IC Title", S, U_TITLE_SINGLES, 14);        /* Chris Jericho */

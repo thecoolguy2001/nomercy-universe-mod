@@ -46,7 +46,8 @@ typedef struct {
     uint32_t test_seed;      /* 0x2C test: non-zero = seed for a new universe (repeatable cards) */
     uint32_t test_stip;      /* 0x30 test: 1 + U_STIP_* given to every match of new cards that allows it */
     uint32_t test_time;      /* 0x34 test: 1 + RULES time limit (0 5 min .. 5 none) for every match */
-    uint32_t reserved[2];
+    uint32_t test_rumble;    /* 0x38 test: Royal Rumbles of new cards cut to this many entrants */
+    uint32_t reserved[1];
 } Mailbox;
 
 #endif

@@ -64,9 +64,9 @@ static void test_corrupt_save_rejected(void)
     buf[0] = 'X';
     CHECK(u_load(&u, buf, sizeof buf) == -2);
     buf[0] = 'N';
-    buf[3] = 1; /* old version */
+    buf[3] = U_SAVE_VERSION - 1; /* old version */
     CHECK(u_load(&u, buf, sizeof buf) == -3);
-    buf[3] = 2;
+    buf[3] = U_SAVE_VERSION;
     CHECK(u_load(&u, buf, 10) == -1);
     CHECK(u_load(&u, buf, sizeof buf) == 0);
 }
@@ -134,6 +134,29 @@ static void test_booking_invariants(void)
                 const UMatch *m = &s.m[i];
                 CHECK(m->format < U_FMT_COUNT && m->stip < U_STIP_COUNT);
                 CHECK(u_stip_supported(m->format, m->stip));
+                if (m->format == U_FMT_RUMBLE) {
+                    /* entrants: distinct, healthy, never the World champion,
+                     * a multiple of 4; they may also wrestle elsewhere */
+                    uint8_t in[U_MAX_WRESTLERS];
+                    int nreg = 0, nfill = 0;
+                    memset(in, 0, sizeof in);
+                    CHECK(s.kind == U_SHOW_PPV && i == s.count - 1);
+                    CHECK(m->n_entrants >= 4 && m->n_entrants <= U_RUMBLE_MAX &&
+                          m->n_entrants % 4 == 0);
+                    for (k = 0; k < m->n_entrants; k++) {
+                        uint8_t id = m->entrant[k];
+                        CHECK(id < u.n_wrestlers && !in[id]);
+                        in[id] = 1;
+                        CHECK(u.w[id].active && !u.w[id].injured_weeks);
+                        CHECK(id != u_title_holder(&u, 0));
+                        if (u.w[id].role == U_ROLE_REGULAR) nreg++; else nfill++;
+                    }
+                    for (k = 0; k < u.n_wrestlers; k++)  /* fill-ins only if short */
+                        if (u.w[k].role == U_ROLE_REGULAR && u.w[k].active &&
+                            !u.w[k].injured_weeks && k != u_title_holder(&u, 0))
+                            CHECK(in[k] || nfill == 0);
+                    continue;
+                }
                 /* a guest referee is a wrestler of the roster, not in the match */
                 CHECK((m->referee != U_NONE) == (m->stip == U_STIP_REFEREE));
                 if (m->referee != U_NONE) {
@@ -180,9 +203,14 @@ static void test_booking_invariants(void)
                 if (s.brand != U_NONE && ti->brand != s.brand) continue;
                 CHECK(seen[h]);
                 if (s.kind == U_SHOW_PPV) {
-                    int defended = 0;
-                    for (i = 0; i < s.count; i++) defended |= s.m[i].title == t;
-                    CHECK(defended);
+                    /* (a Rumble winner may spend WrestleMania challenging for
+                     * the World title instead of defending his own) */
+                    int defended = 0, challenger = 0;
+                    for (i = 0; i < s.count; i++) {
+                        defended |= s.m[i].title == t;
+                        challenger |= s.m[i].title == 0 && involves(&s.m[i], h);
+                    }
+                    CHECK(defended || challenger);
                 }
             }
             for (i = 0; i < s.count; i++) {
@@ -332,7 +360,8 @@ static void test_supported_combinations(void)
     for (f = 0; f < U_FMT_COUNT; f++)
         for (st = 0; st < U_STIP_COUNT; st++)
             CHECK(u_stip_supported((uint8_t)f, (uint8_t)st) ==
-                  (st == U_STIP_CAGE ? f == U_FMT_SINGLE
+                  (f == U_FMT_RUMBLE ? st == U_STIP_NORMAL
+                   : st == U_STIP_CAGE ? f == U_FMT_SINGLE
                    : st == U_STIP_REFEREE ? f != U_FMT_TAG : 1));
     CHECK(!u_stip_supported(U_FMT_COUNT, U_STIP_NORMAL));
     CHECK(!u_stip_supported(U_FMT_SINGLE, U_STIP_COUNT));
@@ -503,6 +532,10 @@ static void test_formats_booked(void)
             u_sim_match(&u, m);
             CHECK(m->winner < u_match_sides(m));
         }
+        if (s.m[s.count - 1].format == U_FMT_RUMBLE) {  /* entrants may double up */
+            u_apply_show(&u, &s);
+            continue;
+        }
         {
             /* everyone in a triple threat / handicap gets exactly one result */
             uint16_t tot[U_MAX_WRESTLERS];
@@ -517,6 +550,22 @@ static void test_formats_booked(void)
     }
     CHECK(count[U_FMT_SINGLE] > 0 && count[U_FMT_TAG] > 0);
     CHECK(count[U_FMT_TRIPLE] > 0 && count[U_FMT_HANDICAP] > 0);
+    CHECK(count[U_FMT_RUMBLE] == 1);              /* 104 shows: one Royal Rumble PPV */
+    {
+        /* weekly cages are rare (hot feuds only): count a few universes */
+        uint32_t seed;
+        for (seed = 1; seed <= 4; seed++) {
+            demo_universe(&u, seed);
+            for (show = 0; show < 52 * 2; show++) {
+                u_book_show(&u, &s);
+                for (i = 0; i < s.count; i++) {
+                    if (s.m[i].stip == U_STIP_CAGE && s.kind == U_SHOW_WEEKLY) cages++;
+                    u_sim_match(&u, &s.m[i]);
+                }
+                u_apply_show(&u, &s);
+            }
+        }
+    }
     CHECK(cages > 0);
 }
 
@@ -549,6 +598,62 @@ static void test_stips_booked(void)
     for (st = 0; st < U_STIP_COUNT; st++) CHECK(count[st] > 0);
 }
 
+/* The Royal Rumble PPV's main event is the Rumble; its winner challenges
+ * the World champion at WrestleMania, then the shot is gone. */
+static void test_royal_rumble(void)
+{
+    uint32_t seed;
+    int shots = 0;
+    for (seed = 1; seed <= 20; seed++) {
+        Universe u;
+        UShow s;
+        UMatch *r;
+        int i, guard = 0;
+        uint8_t winner;
+        demo_universe(&u, seed);
+        while (!(u.slot == 2 && u_ppv_index(&u) == 0) && guard++ < 100) sim_show(&u, &s);
+        CHECK(u.week == 4 && u.slot == 2);
+        CHECK(!strcmp(u_show_name(&u), "Royal Rumble"));
+        u_book_show(&u, &s);
+        r = &s.m[s.count - 1];
+        CHECK(r->format == U_FMT_RUMBLE);
+        if (r->format != U_FMT_RUMBLE) continue;
+        CHECK(u_set_result(r, 0, U_WIN_PINFALL) == -1);
+        CHECK(u_set_result(r, r->n_entrants, U_WIN_RUMBLE) == -1);
+        CHECK(u_set_draw(r) == -1);
+        CHECK(!r->done);
+        for (i = 0; i < s.count; i++) u_sim_match(&u, &s.m[i]);
+        CHECK(r->done && r->method == U_WIN_RUMBLE && r->winner < r->n_entrants);
+        winner = r->entrant[r->winner];
+        {
+            char t[64];
+            u_match_text(&u, r, 1, t, sizeof t);
+            CHECK(strstr(t, "wins the Royal Rumble") != 0);
+            u_match_text(&u, r, 0, t, sizeof t);
+            CHECK(strstr(t, "Royal Rumble - ") == t);
+        }
+        u_apply_show(&u, &s);
+        CHECK(u.rumble_winner == (u.w[winner].role == U_ROLE_REGULAR ? winner : U_NONE));
+        while (!(u.slot == 2 && u_ppv_index(&u) == 2) && guard++ < 200) sim_show(&u, &s);
+        CHECK(!strcmp(u_show_name(&u), "WrestleMania"));
+        if (u.rumble_winner != U_NONE && !u.w[u.rumble_winner].injured_weeks &&
+            u_title_holder(&u, 0) != U_NONE && !u.w[u_title_holder(&u, 0)].injured_weeks &&
+            u.rumble_winner != u_title_holder(&u, 0)) {
+            int found = 0;
+            u_book_show(&u, &s);
+            for (i = 0; i < s.count; i++)
+                found |= s.m[i].title == 0 && involves(&s.m[i], u.rumble_winner) &&
+                         involves(&s.m[i], u_title_holder(&u, 0));
+            CHECK(found);
+            shots++;
+            for (i = 0; i < s.count; i++) u_sim_match(&u, &s.m[i]);
+            u_apply_show(&u, &s);
+            CHECK(u.rumble_winner == U_NONE);
+        }
+    }
+    CHECK(shots > 0);
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -568,6 +673,7 @@ int main(void)
     test_supported_combinations();
     test_draw();
     test_stips_booked();
+    test_royal_rumble();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;
