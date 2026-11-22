@@ -112,3 +112,11 @@ This is the agreed plan. Follow it exactly; ask before changing anything in it.
    written into the game before each match.
 8. All booking rules above.
 Test each step in the debug emulator, install, tell the user what to try.
+
+## Supported combinations (found 2026-11-22)
+- Exhibition (mode 0x02): Single, Tag, Triple Threat, Handicap, Cage (Cage
+  is 1 on 1 only).
+- Multi Play Ladder Match (mode 0x0E): Single, Tag, Triple Threat, Handicap.
+- Multi Play Ironman Match (mode 0x0F): Single, Tag, Triple Threat, Handicap.
+- Multi Play Guest Referee (mode 0x0D): Single, Triple Threat, Handicap (no Tag).
+- So: Cage only for singles; Guest Referee never for tag matches.
