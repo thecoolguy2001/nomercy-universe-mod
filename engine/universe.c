@@ -112,6 +112,7 @@ int u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap
         return side >= 0 && side < m->n_entrants
             ? append(buf, 0, cap, u->w[m->entrant[side]].name) : 0;
     if (side < 0 || side >= 3) return 0;
+    if (m->side[side][0] == U_NONE) return append(buf, 0, cap, "TBD");  /* later round */
     if (m->format == U_FMT_TAG && m->team[side] != U_NONE)
         return append(buf, 0, cap, u->tm[m->team[side]].name);
     if (m->side[side][0] != U_NONE) n = append(buf, n, cap, u->w[m->side[side][0]].name);
@@ -214,6 +215,7 @@ void u_init(Universe *u, uint32_t seed)
     u->rng = seed ? seed : 0x4E4D5531u; /* xorshift must not start at 0 */
     u->week = 1;
     u->rumble_winner = U_NONE;
+    u->king = U_NONE;
 }
 
 int u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
@@ -613,6 +615,70 @@ static void book_rumble(Booker *b, const uint8_t *rank, int n_rank)
     for (i = 0; i < n; i++) m->entrant[i] = pool[i];
 }
 
+/* The King of the Ring PPV (notes/universe-plan.md): one World title
+ * defence, one hot rivalry, and the 16-man tournament from the best-ranked
+ * wrestlers left (seeded 1 v 16, 8 v 9, ...; 8 men if fewer are available).
+ * Card order: first round, quarterfinals, the rivalry, semifinals, the title
+ * match, the final as the main event. */
+static uint8_t feud_stip(Booker *b, const URivalry *r, int title_match);
+
+static void book_kotr(Booker *b, const uint8_t *rank, int n)
+{
+    static const uint8_t SEED16[16] = {0, 15, 7, 8, 4, 11, 3, 12, 2, 13, 5, 10, 6, 9, 1, 14};
+    static const uint8_t SEED8[8] = {0, 7, 3, 4, 2, 5, 1, 6};
+    Universe *u = b->u;
+    uint8_t champ = u->n_titles && u->t[0].kind == U_TITLE_SINGLES ? u_title_holder(u, 0) : U_NONE;
+    uint8_t ent[16], title[2] = {U_NONE, U_NONE}, feud[2] = {U_NONE, U_NONE};
+    int i, ne = 0, size, first, ri = -1;
+    UMatch *m;
+
+    if (champ != U_NONE && !b->used[champ]) {            /* the title defence */
+        for (i = 0; i < n; i++)
+            if (rank[i] != champ && !b->used[rank[i]]) break;
+        if (i < n) {
+            title[0] = champ;
+            title[1] = rank[i];
+            b->used[champ] = b->used[rank[i]] = 1;
+        }
+    }
+    {                                                     /* the hottest feud */
+        int k;
+        for (k = 0; k < U_MAX_RIVALRIES; k++) {
+            const URivalry *r = &u->r[k];
+            if (!r->intensity || b->used[r->a] || b->used[r->b]) continue;
+            if (ri < 0 || r->intensity > u->r[ri].intensity) ri = k;
+        }
+        if (ri >= 0) {
+            feud[0] = u->r[ri].a;
+            feud[1] = u->r[ri].b;
+            b->used[feud[0]] = b->used[feud[1]] = 1;
+        }
+    }
+    for (i = 0; i < n && ne < 16; i++)
+        if (!b->used[rank[i]]) ent[ne++] = rank[i];
+    size = ne >= 16 ? 16 : ne >= 8 ? 8 : 0;
+    first = size == 16 ? 0 : 8;                           /* bracket position of round 1 */
+
+    for (i = 0; i < size / 2; i++) {                      /* first round, seeded */
+        uint8_t x = ent[size == 16 ? SEED16[2 * i] : SEED8[2 * i]];
+        uint8_t y = ent[size == 16 ? SEED16[2 * i + 1] : SEED8[2 * i + 1]];
+        if ((m = book_singles(b, x, y, U_NONE, U_NONE, U_STIP_NORMAL)) != 0)
+            m->kotr = (uint8_t)(1 + first + i);
+    }
+    for (i = first + size / 2; size && i < U_KOTR_MATCHES; i++) {  /* later rounds: TBD */
+        if (i == 12 && feud[0] != U_NONE)
+            book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, feud_stip(b, &u->r[ri], 0));
+        if (i == 14 && title[0] != U_NONE)
+            book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL);
+        if ((m = new_match(b, U_FMT_SINGLE, U_NONE, U_STIP_NORMAL)) != 0) m->kotr = (uint8_t)(1 + i);
+    }
+    if (!size) {                                          /* (not enough men) */
+        if (feud[0] != U_NONE)
+            book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, feud_stip(b, &u->r[ri], 0));
+        if (title[0] != U_NONE) book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL);
+    }
+}
+
 /* Interim stipulations, so every match type turns up until the booking
  * step of notes/universe-plan.md (step 8) brings the real rules: weekly TV
  * hot feuds are sometimes a Cage or No DQ match; PPV hot feuds get Ladder
@@ -697,6 +763,12 @@ void u_book_show(Universe *u, UShow *s)
     /* The Royal Rumble PPV's main event (booked first: the card is
      * reversed at the end). Its entrants may also wrestle earlier. */
     if (ppv && u_ppv_index(u) == 0) book_rumble(&b, rank, n);
+
+    if (ppv && u_ppv_index(u) == 5) {                    /* King of the Ring */
+        b.max = U_MAX_MATCHES;
+        book_kotr(&b, rank, n);
+        return;                                           /* (already in card order) */
+    }
 
     for (t = 0; t < u->n_titles; t++) {
         UTitle *ti = &u->t[t];
@@ -873,6 +945,65 @@ static uint8_t sim_winner(Universe *u, const UMatch *m)
     }
 }
 
+/* ---------- tournaments (King of the Ring) ---------- */
+
+int u_match_ready(const UMatch *m)
+{
+    int k;
+    if (m->format == U_FMT_RUMBLE) return m->n_entrants > 0;
+    for (k = 0; k < u_match_sides(m); k++) {
+        if (m->side[k][0] == U_NONE) return 0;
+        if ((m->format == U_FMT_TAG || (m->format == U_FMT_HANDICAP && k == 1)) &&
+            m->side[k][1] == U_NONE)
+            return 0;
+    }
+    return 1;
+}
+
+const char *u_round_name(const UMatch *m)
+{
+    if (!m->kotr) return "";
+    if (m->kotr <= 8) return "First Round";
+    if (m->kotr <= 12) return "Quarterfinal";
+    if (m->kotr <= 14) return "Semifinal";
+    return "Final";
+}
+
+/* Bracket position p (0-14): later rounds take the winners of positions
+ * 2(p-8) and 2(p-8)+1. A side is known once its feeder has a winner. */
+void u_show_update(UShow *s)
+{
+    int at[U_KOTR_MATCHES], i, k;
+    for (i = 0; i < U_KOTR_MATCHES; i++) at[i] = -1;
+    for (i = 0; i < s->count; i++)
+        if (s->m[i].kotr) at[s->m[i].kotr - 1] = i;
+    for (i = 8; i < U_KOTR_MATCHES; i++) {
+        UMatch *m;
+        if (at[i] < 0 || s->m[at[i]].done) continue;
+        if (at[2 * (i - 8)] < 0 && at[2 * (i - 8) + 1] < 0) continue;  /* an 8-man first round */
+        m = &s->m[at[i]];
+        for (k = 0; k < 2; k++) {
+            int f = at[2 * (i - 8) + k];
+            const UMatch *fm = f >= 0 ? &s->m[f] : 0;
+            m->side[k][0] = fm && fm->done && fm->winner < 2 ? fm->side[fm->winner][0] : U_NONE;
+        }
+    }
+}
+
+void u_sim_show(Universe *u, UShow *s)
+{
+    int i, more = 1;
+    while (more) {                     /* later rounds become ready */
+        more = 0;
+        for (i = 0; i < s->count; i++)
+            if (!s->m[i].done && u_match_ready(&s->m[i])) {
+                u_sim_match(u, &s->m[i]);
+                u_show_update(s);
+                more = 1;
+            }
+    }
+}
+
 /* Royal Rumble: the better and the later an entrant, the likelier the win */
 static uint8_t sim_rumble(Universe *u, const UMatch *m)
 {
@@ -896,6 +1027,7 @@ void u_sim_match(Universe *u, UMatch *m)
 {
     uint32_t roll;
 
+    if (!u_match_ready(m)) return;
     if (m->format == U_FMT_RUMBLE) {
         m->winner = m->n_entrants ? sim_rumble(u, m) : U_NONE;
         m->method = U_WIN_RUMBLE;
@@ -937,7 +1069,8 @@ void u_sim_match(Universe *u, UMatch *m)
 int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
 {
     if (winning_side >= u_match_sides(m) || method == U_WIN_FALLS ||
-        method == U_WIN_DRAW || (m->format == U_FMT_RUMBLE) != (method == U_WIN_RUMBLE))
+        method == U_WIN_DRAW || (m->format == U_FMT_RUMBLE) != (method == U_WIN_RUMBLE) ||
+        !u_match_ready(m))
         return -1;
     if (!u_method_allowed(m->stip, method)) return -1;
     m->winner = winning_side;
@@ -950,7 +1083,9 @@ int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
 /* A match the player played ended without a winner */
 int u_set_draw(UMatch *m)
 {
-    if (m->stip >= U_STIP_COUNT || m->format == U_FMT_RUMBLE) return -1;
+    /* (Rumbles and tournament matches always have a winner) */
+    if (m->stip >= U_STIP_COUNT || m->format == U_FMT_RUMBLE || m->kotr || !u_match_ready(m))
+        return -1;
     m->winner = U_NONE;
     m->method = U_WIN_DRAW;
     m->source = U_SRC_PLAYED;
@@ -963,7 +1098,7 @@ int u_set_draw(UMatch *m)
 int u_set_ironman_result(UMatch *m, const uint8_t *falls)
 {
     int k, n = u_match_sides(m), best = 0, level = 0;
-    if (m->stip != U_STIP_IRONMAN) return -1;
+    if (m->stip != U_STIP_IRONMAN || !u_match_ready(m)) return -1;
     for (k = 1; k < n; k++) {
         if (falls[k] > falls[best]) { best = k; level = 0; }
         else if (falls[k] == falls[best]) level = 1;
@@ -1143,6 +1278,12 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
         }
     }
 
+    /* King of the Ring: the final's winner is crowned */
+    if (m->kotr == U_KOTR_MATCHES && !tag) {
+        u->king = m->side[W][0];
+        add_momentum(&u->w[u->king], 20);
+    }
+
     if (nl && u_rand(u, 100) < 4) {
         uint8_t id = losers[u_rand(u, (uint32_t)nl)];
         u->w[id].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
@@ -1236,6 +1377,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
     w8(&w, u->slot);
     w32(&w, u->rng);
     w8(&w, u->rumble_winner);
+    w8(&w, u->king);
     w8(&w, u->n_wrestlers);
     w8(&w, u->n_teams);
     w8(&w, u->n_titles);
@@ -1299,11 +1441,13 @@ int u_load(Universe *u, const uint8_t *buf, int len)
     u->slot = r8(&r);
     u->rng = r32(&r);
     u->rumble_winner = r8(&r);
+    u->king = r8(&r);
     nw = u->n_wrestlers = r8(&r);
     nteams = u->n_teams = r8(&r);
     nt = u->n_titles = r8(&r);
     if (nw > U_MAX_WRESTLERS || nteams > U_MAX_TEAMS || nt > U_MAX_TITLES ||
-        u->slot > 2 || !u->rng || (u->rumble_winner != U_NONE && u->rumble_winner >= nw))
+        u->slot > 2 || !u->rng || (u->rumble_winner != U_NONE && u->rumble_winner >= nw) ||
+        (u->king != U_NONE && u->king >= nw))
         return load_fail(u, -5);
 
     for (i = 0; i < U_MAX_WRESTLERS; i++) {

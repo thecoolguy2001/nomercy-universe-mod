@@ -30,7 +30,7 @@ typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
 
 static Universe U;
 static UShow    SHOW;
-static uint8_t  started, show_ready, cursor, view;  /* view 0 card, 1 results */
+static uint8_t  started, show_ready, cursor, top, view;  /* view 0 card, 1 results */
 static uint8_t  pending = U_NONE, pending_watch;    /* match being played/watched in the game */
 
 #define MAX_LINES 10
@@ -148,6 +148,7 @@ void us_enter(uint32_t seed)
                 SHOW.m[i].n_entrants = (uint8_t)(test_rumble & ~3u);
         show_ready = 1;
         cursor = 0;
+        top = 0;
     }
     view = 0;
 }
@@ -163,6 +164,11 @@ static void finish_show(void)
         if (m->title_changed) {
             s_init(&s, headline[n_headlines++], LINE_LEN);
             s_add(&s, "NEW CHAMPION: ");
+            s_add(&s, side(m, m->winner));
+        }
+        if (m->kotr == U_KOTR_MATCHES && m->done && m->winner < 2 && n_headlines < MAX_LINES) {
+            s_init(&s, headline[n_headlines++], LINE_LEN);
+            s_add(&s, "KING OF THE RING: ");
             s_add(&s, side(m, m->winner));
         }
         if (m->format == U_FMT_RUMBLE && m->done && m->winner < m->n_entrants &&
@@ -234,7 +240,7 @@ static const uint8_t RUMBLE_RULES[US_RULES] = {0x0D, 5, 2, 0, 0, 1, 0, 1, 0, 0, 
  * supported combinations); Guest Referee only as the referee (no Watch). */
 static int playable(const UMatch *m, int watch)
 {
-    if (!u_stip_supported(m->format, m->stip)) return 0;
+    if (!u_stip_supported(m->format, m->stip) || !u_match_ready(m)) return 0;
     return !(watch && m->stip == U_STIP_REFEREE);
 }
 
@@ -284,11 +290,10 @@ int us_input(uint16_t pressed)
         return 2;                         /* resident launches the real match */
     }
     if (pressed & B_START) {
-        int i;
-        for (i = 0; i < SHOW.count; i++)
-            if (!SHOW.m[i].done) u_sim_match(&U, &SHOW.m[i]);
+        u_sim_show(&U, &SHOW);            /* (tournament rounds in order) */
     } else if ((pressed & B_A) && !SHOW.m[cursor].done) {
         u_sim_match(&U, &SHOW.m[cursor]);
+        u_show_update(&SHOW);             /* a winner moves on in the bracket */
     }
     return 1;
 }
@@ -462,6 +467,7 @@ void us_match_result(const UGameResult *r)
         method = m->stip == U_STIP_LADDER || m->stip == U_STIP_CAGE ? U_WIN_SPECIAL
                                                                      : U_WIN_PINFALL;
     u_set_result(m, (uint8_t)win, method);
+    u_show_update(&SHOW);                 /* a tournament winner moves on */
 }
 
 /* The game is back on the menus: no more results for this match */
@@ -571,10 +577,15 @@ void us_draw(void *holder)
         return;
     }
 
+    /* eight lines at a time, scrolled to keep the cursor in view (King of
+     * the Ring cards are longer) */
+    if (cursor < top) top = cursor;
+    if (cursor >= top + 8) top = (uint8_t)(cursor - 7);
+    if (top + 8 > SHOW.count) top = SHOW.count > 8 ? (uint8_t)(SHOW.count - 8) : 0;
     y = 58;
-    for (i = 0; i < SHOW.count && i < 8; i++, y += 14) {
+    for (i = top; i < SHOW.count && i < top + 8; i++, y += 14) {
         const UMatch *m = &SHOW.m[i];
-        s_init(&s, line[1 + i], LINE_LEN);
+        s_init(&s, line[1 + i - top], LINE_LEN);
         if (i == cursor) s_add(&s, "$d ");
         {
             char t[LINE_LEN];
@@ -583,7 +594,7 @@ void us_draw(void *holder)
         }
         /* long lines (handicap, triple threat, tag names) are drawn smaller
          * so they stay inside the panel */
-        text_scaled(holder, line[1 + i], y, s.n > 34 ? 0xA8 : s.n > 28 ? 0xC0 : 0xD8);
+        text_scaled(holder, line[1 + i - top], y, s.n > 34 ? 0xA8 : s.n > 28 ? 0xC0 : 0xD8);
     }
 
     /* details of the selected match: its type and title, then the guest
@@ -592,6 +603,7 @@ void us_draw(void *holder)
         const UMatch *m = &SHOW.m[cursor];
         s_init(&s, line[9], LINE_LEN);
         if (cursor == SHOW.count - 1) s_add(&s, "Main Event  ");
+        if (m->kotr) { s_add(&s, "King of the Ring "); s_add(&s, u_round_name(m)); s_add(&s, "  "); }
         if (m->format != U_FMT_SINGLE) { s_add(&s, u_format_name(m->format)); s_add(&s, " "); }
         if (m->stip != U_STIP_NORMAL) { s_add(&s, u_stip_name(m->stip)); s_add(&s, " "); }
         if (m->format != U_FMT_SINGLE || m->stip != U_STIP_NORMAL) s_add(&s, "Match  ");
@@ -605,6 +617,8 @@ void us_draw(void *holder)
             } else {
                 s_add(&s, "Prize: title shot at WrestleMania");
             }
+        } else if (!u_match_ready(m)) {
+            s_add(&s, "Waiting for the earlier rounds");
         } else if (m->done && m->method == U_WIN_DRAW) {
             s_add(&s, "Draw");
         } else if (m->done) {
@@ -628,7 +642,7 @@ void us_draw(void *holder)
     }
     if (card_done())
         text(holder, "$0Results   $1Back", 200);
-    else if (SHOW.m[cursor].done)
+    else if (SHOW.m[cursor].done || !u_match_ready(&SHOW.m[cursor]))
         small(holder, "$eSim All  $1Back", 200);
     else if (playable(&SHOW.m[cursor], 1))
         small(holder, "$3Play $4Watch $0Sim $eAll $1Back", 200);

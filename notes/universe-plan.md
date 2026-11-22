@@ -46,6 +46,10 @@ This is the agreed plan. Follow it exactly; ask before changing anything in it.
   quarterfinals, 2 semifinals, final; later rounds fill from winners as
   they are played/simmed) + ONE title defence + ONE high-rivalry match.
   Winner crowned King, big momentum boost.
+  (User, 2026-11-22: match by match - each tournament match is its own
+  card match, played / watched as a normal single match in the game or
+  simmed; No Mercy's KOTR mode, which runs the whole bracket in one go, is
+  not used.)
 - SummerSlam: Ladder only for the hottest rivalry, 50% chance.
 - Unforgiven: Triple Threat World title + a Handicap match.
 - Survivor Series: card of regular 2-on-2 tag matches (no elimination),

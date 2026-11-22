@@ -119,6 +119,7 @@ static void print_match(const Universe *u, const UMatch *m, int num, int last)
     char text[128];
     u_match_text(u, m, 0, text, sizeof text);
     printf("  %d. %s%s", num, last ? "MAIN EVENT: " : "", text);
+    if (m->kotr) printf("  <King of the Ring %s>", u_round_name(m));
     if (m->format != U_FMT_SINGLE) printf("  <%s>", u_format_name(m->format));
     if (m->stip != U_STIP_NORMAL) printf("  <%s>", u_stip_name(m->stip));
     if (m->title != U_NONE) printf("  [%s]", u->t[m->title].name);
@@ -179,6 +180,7 @@ static void run_show(Universe *u, int play)
         } else {
             u_sim_match(u, m);
         }
+        u_show_update(&s);                     /* tournament: the next round */
         {
             char text[128];
             u_match_text(u, m, 1, text, sizeof text);
@@ -214,6 +216,10 @@ static void run_show(Universe *u, int play)
         if (m->injured != U_NONE)
             printf("  %s is injured and out %u week(s).\n", u->w[m->injured].name,
                    m->injury_weeks);
+        if (m->format == U_FMT_RUMBLE && m->winner < m->n_entrants)
+            printf("  %s wins the Royal Rumble!\n", u->w[m->entrant[m->winner]].name);
+        if (m->kotr == U_KOTR_MATCHES && m->done)
+            printf("  %s is crowned King of the Ring!\n", side_name(u, m, m->winner));
     }
     printf("\n");
 }

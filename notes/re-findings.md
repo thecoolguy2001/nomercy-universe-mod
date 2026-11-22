@@ -474,3 +474,13 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   new 4s and reads that place's id.
 - The Royal Rumble's result screen is 0x1C (not 0x1D); Exit there goes to
   the Multi Play page (02) like the others.
+
+## King of the Ring mode (plan step 4, 2026-11-22; not used)
+- Multi Play item 3, mode 0x08. Tabs: MATCH (Simple Match, Tag Match, Cage
+  Match, Ladder: Single, Ladder: Tag), NUMBER ("Number of Superstars",
+  3-16, default 16), ARENA, RULES (Time Limit, Bloodshed); no PLAYER tab.
+- START: Superstar Select for every entrant ("1/16"), then a bracket
+  screen (0x0A) with CPU / MAN per entrant and Decision / All Player /
+  All CPU; the game then plays the whole bracket.
+- The user chose match-by-match tournaments instead (plan updated):
+  Universe books the bracket and each match is a normal Exhibition single.

@@ -542,8 +542,7 @@ static void handle(uint16_t btn)
         move_cursor(btn, SHOW.count + (all_done() ? 1 : 0));
         if (btn & BTN_B) { go(SC_HOME); break; }
         if (btn & BTN_Z) {
-            for (i = 0; i < SHOW.count; i++)
-                if (!SHOW.m[i].done) u_sim_match(&U, &SHOW.m[i]);
+            u_sim_show(&U, &SHOW);
             pending = U_NONE;
             persist_store();
             cursor = SHOW.count;
@@ -555,11 +554,13 @@ static void handle(uint16_t btn)
         }
         if ((btn & BTN_A) && !SHOW.m[cursor].done) {
             u_sim_match(&U, &SHOW.m[cursor]);
+            u_show_update(&SHOW);
             if (pending == cursor) pending = U_NONE;
             persist_store();
             if (all_done()) cursor = SHOW.count;
         } else if ((btn & BTN_START) && !SHOW.m[cursor].done &&
-                   SHOW.m[cursor].format != U_FMT_RUMBLE) {   /* (Rumbles: sim only here) */
+                   SHOW.m[cursor].format != U_FMT_RUMBLE &&     /* (Rumbles: sim only here) */
+                   u_match_ready(&SHOW.m[cursor])) {
             pending = (uint8_t)cursor;
             persist_store();
             go(SC_PLAY);
@@ -600,6 +601,7 @@ static void handle(uint16_t btn)
             if (btn & BTN_B) { report_step = 0; cursor = report_side; break; }
             if (!(btn & BTN_A)) break;
             u_set_result(&SHOW.m[pending], (uint8_t)report_side, report_methods[cursor]);
+            u_show_update(&SHOW);
             i = pending;
             pending = U_NONE;
             persist_store();

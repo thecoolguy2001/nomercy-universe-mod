@@ -21,12 +21,13 @@
 #define U_MAX_TITLES     6
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
 #define U_MAX_RIVALRIES  8
-#define U_MAX_MATCHES    8
+#define U_MAX_MATCHES    20  /* King of the Ring PPV: 15 tournament matches + 2 */
 #define U_WEEKLY_MATCHES 6
 #define U_PPV_MATCHES    8
 #define U_PPV_EVERY      4   /* a PPV closes every 4th week */
 #define U_NAME_LEN       16  /* includes terminating zero */
 #define U_RUMBLE_MAX     40  /* Royal Rumble entrants (No Mercy: 4 to 40, steps of 4) */
+#define U_KOTR_MATCHES   15  /* King of the Ring bracket: 8 + 4 + 2 + 1 */
 
 #define U_NONE           0xFF
 #define U_OPEN_WEEK      0xFFFF  /* reign still in progress */
@@ -137,6 +138,10 @@ typedef struct {
     uint8_t method;
     uint8_t source;
     uint8_t falls[3];       /* Ironman: falls scored by each side */
+    uint8_t kotr;           /* King of the Ring: 1 + bracket position (1-8 first
+                               round, 9-12 quarterfinals, 13-14 semis, 15 final),
+                               0 = not a tournament match; sides of later rounds
+                               stay U_NONE until u_show_update fills them */
     uint8_t n_entrants;     /* Royal Rumble: entrant[] in entry order, winner = */
     uint8_t entrant[U_RUMBLE_MAX]; /* the winner's index in it */
     /* consequences (filled by u_apply_show, for display) */
@@ -160,6 +165,7 @@ typedef struct {
     uint8_t   slot;         /* 0 = Raw, 1 = SmackDown, 2 = PPV */
     uint32_t  rng;
     uint8_t   rumble_winner;  /* World title shot at the next WrestleMania, or U_NONE */
+    uint8_t   king;           /* the latest King of the Ring, or U_NONE */
     uint8_t   n_wrestlers;
     uint8_t   n_teams;
     uint8_t   n_titles;
@@ -169,9 +175,9 @@ typedef struct {
     URivalry  r[U_MAX_RIVALRIES];
 } Universe;
 
-#define U_SAVE_VERSION 3      /* bumped when the layout changes */
+#define U_SAVE_VERSION 4      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
-#define U_SAVE_HEADER_BYTES   15
+#define U_SAVE_HEADER_BYTES   16
 #define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 12)
 #define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 7)
 #define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 5 + U_MAX_REIGNS * 6)
@@ -221,7 +227,11 @@ int     u_stip_supported(uint8_t format, uint8_t stip);
 
 /* ---- show loop: book -> (play or sim each match) -> apply ---- */
 void    u_book_show(Universe *u, UShow *s);
-void    u_sim_match(Universe *u, UMatch *m);
+int     u_match_ready(const UMatch *m);      /* every side known (tournaments) */
+void    u_show_update(UShow *s);             /* fill later rounds from winners */
+void    u_sim_match(Universe *u, UMatch *m); /* (does nothing if not ready) */
+void    u_sim_show(Universe *u, UShow *s);   /* every match left, rounds in order */
+const char *u_round_name(const UMatch *m);   /* "Quarterfinal"..., "" if none */
 int     u_set_result(UMatch *m, uint8_t winning_side, uint8_t method);
 int     u_set_draw(UMatch *m);
 /* falls[k] for each of the u_match_sides() sides; level at the top = draw */

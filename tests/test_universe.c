@@ -13,7 +13,8 @@ static void sim_show(Universe *u, UShow *s)
 {
     int i;
     u_book_show(u, s);
-    for (i = 0; i < s->count; i++) u_sim_match(u, &s->m[i]);
+    u_sim_show(u, s);
+    for (i = 0; i < s->count; i++) CHECK(s->m[i].done);
     u_apply_show(u, s);
 }
 
@@ -126,10 +127,13 @@ static void test_booking_invariants(void)
         demo_universe(&u, seed);
         for (show = 0; show < 52 * 2 + 13; show++) {
             uint8_t seen[U_MAX_WRESTLERS];
+            int kotr;
             memset(seen, 0, sizeof seen);
             u_book_show(&u, &s);
             CHECK(s.count >= 3); /* 12-man brand, two tag matches, injuries */
-            CHECK(s.count <= (s.kind == U_SHOW_PPV ? U_PPV_MATCHES : U_WEEKLY_MATCHES));
+            kotr = s.kind == U_SHOW_PPV && s.m[0].kotr != 0;
+            CHECK(s.count <= (kotr ? U_MAX_MATCHES
+                              : s.kind == U_SHOW_PPV ? U_PPV_MATCHES : U_WEEKLY_MATCHES));
             for (i = 0; i < s.count; i++) {
                 const UMatch *m = &s.m[i];
                 CHECK(m->format < U_FMT_COUNT && m->stip < U_STIP_COUNT);
@@ -172,6 +176,7 @@ static void test_booking_invariants(void)
                                : m->format == U_FMT_TAG ? 1
                                : m->format == U_FMT_HANDICAP && k / 2 == 1 ? 1
                                : k % 2 == 0;
+                    if (m->kotr > 8 && !u_match_ready(m)) expect = 0;  /* later round: TBD */
                     CHECK((id != U_NONE) == expect);
                     if (id == U_NONE) continue;
                     CHECK(id < u.n_wrestlers);
@@ -201,6 +206,7 @@ static void test_booking_invariants(void)
                 if (h == U_NONE || ti->kind != U_TITLE_SINGLES || u.w[h].injured_weeks)
                     continue;
                 if (s.brand != U_NONE && ti->brand != s.brand) continue;
+                if (kotr && t != 0) continue;     /* King of the Ring: one defence */
                 CHECK(seen[h]);
                 if (s.kind == U_SHOW_PPV) {
                     /* (a Rumble winner may spend WrestleMania challenging for
@@ -213,10 +219,9 @@ static void test_booking_invariants(void)
                     CHECK(defended || challenger);
                 }
             }
-            for (i = 0; i < s.count; i++) {
-                u_sim_match(&u, &s.m[i]);
-                CHECK(u_method_allowed(s.m[i].stip, s.m[i].method));
-            }
+            u_sim_show(&u, &s);
+            for (i = 0; i < s.count; i++)
+                CHECK(s.m[i].done && u_method_allowed(s.m[i].stip, s.m[i].method));
             u_apply_show(&u, &s);
         }
     }
@@ -525,14 +530,14 @@ static void test_formats_booked(void)
     demo_universe(&u, 5);
     for (show = 0; show < 52 * 2; show++) {
         u_book_show(&u, &s);
+        u_sim_show(&u, &s);
         for (i = 0; i < s.count; i++) {
             UMatch *m = &s.m[i];
             count[m->format]++;
             if (m->stip == U_STIP_CAGE && s.kind == U_SHOW_WEEKLY) cages++;
-            u_sim_match(&u, m);
             CHECK(m->winner < u_match_sides(m));
         }
-        if (s.m[s.count - 1].format == U_FMT_RUMBLE) {  /* entrants may double up */
+        if (s.m[s.count - 1].format == U_FMT_RUMBLE || s.m[0].kotr) {  /* entrants may double up */
             u_apply_show(&u, &s);
             continue;
         }
@@ -654,6 +659,74 @@ static void test_royal_rumble(void)
     CHECK(shots > 0);
 }
 
+/* King of the Ring: the 16-man bracket fills round by round and its
+ * winner is crowned King. */
+static void test_king_of_the_ring(void)
+{
+    Universe u;
+    UShow s;
+    int i, guard = 0, at[U_KOTR_MATCHES], titles = 0, others = 0;
+    uint8_t seen[U_MAX_WRESTLERS], rank[U_MAX_WRESTLERS], king;
+    demo_universe(&u, 4);
+    while (!(u.slot == 2 && u_ppv_index(&u) == 5) && guard++ < 200) sim_show(&u, &s);
+    CHECK(!strcmp(u_show_name(&u), "King of the Ring"));
+    u_book_show(&u, &s);
+    memset(seen, 0, sizeof seen);
+    for (i = 0; i < U_KOTR_MATCHES; i++) at[i] = -1;
+    for (i = 0; i < s.count; i++) {
+        const UMatch *m = &s.m[i];
+        if (!m->kotr) {
+            if (m->title == 0) titles++; else others++;
+            continue;
+        }
+        CHECK(m->kotr <= U_KOTR_MATCHES && at[m->kotr - 1] < 0);
+        at[m->kotr - 1] = i;
+        CHECK(m->format == U_FMT_SINGLE && m->title == U_NONE);
+        CHECK(u_match_ready(m) == (m->kotr <= 8));        /* later rounds: TBD */
+        if (m->kotr <= 8) {
+            CHECK(!seen[m->side[0][0]] && !seen[m->side[1][0]]);
+            seen[m->side[0][0]] = seen[m->side[1][0]] = 1;
+        }
+    }
+    for (i = 0; i < U_KOTR_MATCHES; i++) CHECK(at[i] >= 0);
+    CHECK(titles == 1 && others <= 1);
+    CHECK(s.m[s.count - 1].kotr == U_KOTR_MATCHES);       /* the final is the main event */
+    {
+        /* the best-ranked entrant opens against the 16th */
+        int n = u_rankings(&u, U_NONE, rank, U_MAX_WRESTLERS), j, first = -1;
+        for (j = 0; j < n && first < 0; j++)
+            if (seen[rank[j]]) first = rank[j];
+        CHECK(s.m[at[0]].side[0][0] == first);
+    }
+    /* one first-round result fills its quarterfinal side */
+    CHECK(u_set_draw(&s.m[at[0]]) == -1);
+    u_sim_match(&u, &s.m[at[0]]);
+    u_show_update(&s);
+    CHECK(s.m[at[8]].side[0][0] == s.m[at[0]].side[s.m[at[0]].winner][0]);
+    CHECK(s.m[at[8]].side[1][0] == U_NONE);
+    u_sim_match(&u, &s.m[at[8]]);                         /* not ready: nothing */
+    CHECK(!s.m[at[8]].done);
+    u_sim_show(&u, &s);
+    for (i = 0; i < s.count; i++) CHECK(s.m[i].done);
+    for (i = 8; i < U_KOTR_MATCHES; i++) {                /* winners moved on */
+        const UMatch *m = &s.m[at[i]];
+        int k;
+        for (k = 0; k < 2; k++) {
+            const UMatch *f = &s.m[at[2 * (i - 8) + k]];
+            CHECK(m->side[k][0] == f->side[f->winner][0]);
+        }
+    }
+    king = s.m[at[14]].side[s.m[at[14]].winner][0];
+    u_apply_show(&u, &s);
+    CHECK(u.king == king);
+    {
+        uint8_t buf[U_SAVE_SIZE];
+        Universe v;
+        CHECK(u_save(&u, buf, sizeof buf) == U_SAVE_SIZE);
+        CHECK(u_load(&v, buf, sizeof buf) == 0 && v.king == king);
+    }
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -674,6 +747,7 @@ int main(void)
     test_draw();
     test_stips_booked();
     test_royal_rumble();
+    test_king_of_the_ring();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;
