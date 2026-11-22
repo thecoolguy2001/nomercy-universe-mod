@@ -374,6 +374,9 @@ void us_match_result(const UGameResult *r)
             *f = (uint8_t)(*f + r->falls[first + i]);
         }
         u_set_ironman_result(m, falls);
+        /* the game's verdict decides (the falls are for the card) */
+        m->winner = win < 0 ? U_NONE : (uint8_t)win;
+        m->method = win < 0 ? U_WIN_DRAW : U_WIN_FALLS;
         return;
     }
     if (win < 0) {
