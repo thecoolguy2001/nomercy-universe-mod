@@ -21,7 +21,7 @@
 #define U_MAX_TITLES     8   /* the game's 7 belts */
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
 #define U_MAX_RIVALRIES  80   /* a new universe starts with every game rival */
-#define U_MAX_ALLIES     48
+#define U_MAX_ALLIES     64
 #define U_MAX_MATCHES    20  /* King of the Ring PPV: 15 tournament matches + 2 */
 #define U_WEEKLY_MATCHES 7
 #define U_WEEKLY_FEUDS   4    /* rivalry matches per weekly show (the rest from rankings) */
@@ -113,6 +113,10 @@ typedef struct {
     uint16_t losses;
     uint16_t points;        /* tag team ranking points */
     int8_t   streak;
+    uint8_t  split;         /* broken up: out of the rankings for good */
+    int8_t   low_weeks;     /* weeks in a row low in the tag ranking (< 0: new team's grace) */
+    uint8_t  debut;         /* a new team waiting for its debut tag match */
+    uint16_t last_show;     /* 4 * week + slot of its last tag match, 0 = none yet */
 } UTeam;
 
 typedef struct {
@@ -147,8 +151,11 @@ typedef struct {
 typedef struct {
     uint8_t a, b;
     uint8_t level;          /* 0 = unused */
+    uint8_t together;       /* together this week (fading is weekly) */
 } UAlly;
-#define U_ALLY_CLOSE 70     /* close allies: never opponents */
+#define U_ALLY_CLOSE     70 /* close allies: never opponents */
+#define U_ALLY_COMPANION 50 /* the strongest ally from here up comes to the ring */
+#define U_ALLY_TEAM      70 /* two men this close (high allies) may form a tag team */
 
 typedef struct {
     /* booking (filled by u_book_show) */
@@ -179,6 +186,8 @@ typedef struct {
     uint8_t rivalry_ended;
     uint8_t injured;        /* wrestler id or U_NONE */
     uint8_t injury_weeks;
+    uint8_t run_in;         /* simulated: a companion who ran in to help, else U_NONE */
+    uint8_t run_in_for;     /* ... the wrestler he helped */
 } UMatch;
 
 typedef struct {
@@ -187,6 +196,9 @@ typedef struct {
     uint8_t  brand;         /* U_NONE for a PPV (both brands) */
     uint8_t  count;
     UMatch   m[U_MAX_MATCHES]; /* card order: m[count-1] is the main event */
+    /* tag team news of the week (u_apply_show of its first show), U_NONE = none */
+    uint8_t  team_formed;
+    uint8_t  team_split;
 } UShow;
 
 typedef struct {
@@ -205,17 +217,17 @@ typedef struct {
     UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 8      /* bumped when the layout changes */
+#define U_SAVE_VERSION 9      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
 #define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 22)
-#define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 10)
+#define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 15)
 #define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 9 + U_MAX_REIGNS * 6)
 #define U_SAVE_SIZE (U_SAVE_HEADER_BYTES \
                      + U_MAX_WRESTLERS * U_SAVE_WRESTLER_BYTES \
                      + U_MAX_TEAMS * U_SAVE_TEAM_BYTES \
                      + U_MAX_TITLES * U_SAVE_TITLE_BYTES \
-                     + U_MAX_RIVALRIES * 6 + U_MAX_ALLIES * 3 + 2)
+                     + U_MAX_RIVALRIES * 6 + U_MAX_ALLIES * 4 + 2)
 
 /* ---- setup / roster management ---- */
 void    u_init(Universe *u, uint32_t seed);
@@ -238,6 +250,12 @@ int     u_add_rivalry(Universe *u, uint8_t a, uint8_t b, uint8_t intensity);
 /* sets (or raises) the ally level of a pair; -1 if full or invalid */
 int     u_add_ally(Universe *u, uint8_t a, uint8_t b, uint8_t level);
 int     u_ally_level(const Universe *u, uint8_t a, uint8_t b);
+/* Who comes to the ring with a wrestler of the match: his strongest ally
+ * (level U_ALLY_COMPANION or more) who is healthy and not in the match;
+ * U_NONE if nobody. */
+uint8_t u_companion(const Universe *u, const UMatch *m, uint8_t id);
+/* his rivals, hottest first */
+int     u_top_rivals(const Universe *u, uint8_t id, uint8_t *out, int max);
 int     u_set_brand(Universe *u, uint8_t id, uint8_t brand);   /* titles follow */
 int     u_set_align(Universe *u, uint8_t id, uint8_t align);
 int     u_set_overall(Universe *u, uint8_t id, uint8_t overall);

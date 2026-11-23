@@ -13,6 +13,26 @@
 #define U_PTS_RUMBLE  40    /* Royal Rumble winner */
 #define U_PTS_MAX     9999
 
+/* Allies over time (notes/universe-plan.md, Rivalries and allies); the
+ * rates give about one new team and one or two splits a year (measured
+ * over 3 simulated years x 20 universes) */
+#define U_ALLY_TEAMING   4    /* a tag match together (+2 more for a win) */
+#define U_ALLY_HANDICAP  10   /* the pair in a handicap match */
+#define U_ALLY_RUN_IN    10   /* a run-in save */
+#define U_ALLY_COMMON    5    /* per show, same alignment, sharing a rival */
+#define U_ALLY_FADE      2    /* per week apart */
+#define U_RUN_IN_CHANCE  12   /* % per wrestler with a companion, simulated matches */
+#define U_SAVE_CHANCE    15   /* % a simulated feud match has a save */
+#define U_TEAM_FORM_CHANCE 30 /* % a week for the closest free pair of men */
+#define U_TEAM_LOW       2    /* the bottom 2 of the tag ranking ... */
+#define U_TEAM_LOW_WEEKS 6    /* ... for this many weeks may split */
+#define U_TEAM_MIN       6    /* (never below this many teams) */
+#define U_TEAM_SPLIT_CHANCE 2 /* % a week, ... */
+#define U_TEAM_SPLIT_STREAK 8 /* ... more on a losing streak (3+) */
+#define U_TEAM_GRACE     6    /* weeks a new team is safe */
+#define U_FEUD_SET       30   /* a rivalry this hot counts for common rivals and saves */
+#define U_RUN_IN_HEAT    35   /* a run-in starts a rivalry with the other side */
+#define U_FEUD_COOL      2    /* heat a rivalry loses per show it isn't on */
 
 /* ---------- small helpers (no libc) ---------- */
 
@@ -391,6 +411,69 @@ int u_ally_level(const Universe *u, uint8_t a, uint8_t b)
     return 0;
 }
 
+static int in_match(const UMatch *m, uint8_t id)
+{
+    int k;
+    if (m->referee == id) return 1;
+    for (k = 0; k < 6; k++)
+        if (m->side[k / 2][k % 2] == id) return 1;
+    return 0;
+}
+
+uint8_t u_companion(const Universe *u, const UMatch *m, uint8_t id)
+{
+    int i, best = -1;
+    uint8_t who = U_NONE;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        uint8_t o;
+        if (x->level < U_ALLY_COMPANION || (x->a != id && x->b != id)) continue;
+        o = x->a == id ? x->b : x->a;
+        if (!u->w[o].active || u->w[o].injured_weeks || in_match(m, o)) continue;
+        if (x->level > best) { best = x->level; who = o; }
+    }
+    return who;
+}
+
+int u_top_rivals(const Universe *u, uint8_t id, uint8_t *out, int max)
+{
+    int i, j, n = 0;
+    uint8_t heat[U_MAX_RIVALRIES];
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        const URivalry *r = &u->r[i];
+        uint8_t o;
+        if (!r->intensity || (r->a != id && r->b != id)) continue;
+        o = r->a == id ? r->b : r->a;
+        for (j = n; j > 0 && heat[j - 1] < r->intensity; j--) {
+            if (j < max) { out[j] = out[j - 1]; heat[j] = heat[j - 1]; }
+        }
+        if (j < max) { out[j] = o; heat[j] = r->intensity; }
+        if (n < max) n++;
+    }
+    return n;
+}
+
+/* An ally level moves by delta (a new pair starts from it); 0 ends it.
+ * Returns the slot, or -1. */
+static int ally_bump(Universe *u, uint8_t a, uint8_t b, int delta)
+{
+    int i, free = -1;
+    if (a == b || a >= u->n_wrestlers || b >= u->n_wrestlers) return -1;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        UAlly *x = &u->al[i];
+        if (x->level && ((x->a == a && x->b == b) || (x->a == b && x->b == a))) {
+            x->level = (uint8_t)clamp(x->level + delta, 0, 100);
+            return i;
+        }
+        if (!x->level && free < 0) free = i;
+    }
+    if (delta <= 0 || free < 0) return -1;
+    u->al[free].a = a;
+    u->al[free].b = b;
+    u->al[free].level = (uint8_t)clamp(delta, 1, 100);
+    return free;
+}
+
 static UReign *current_reign(UTitle *t)
 {
     return t->reign_count ? &t->history[(t->reign_count - 1) % U_MAX_REIGNS] : 0;
@@ -440,7 +523,7 @@ int u_team_score(const Universe *u, uint8_t team)
 static int team_on_brand(const Universe *u, uint8_t team, uint8_t brand)
 {
     const UTeam *t = &u->tm[team];
-    if (!t->active || !u->w[t->a].active || !u->w[t->b].active) return 0;
+    if (!t->active || t->split || !u->w[t->a].active || !u->w[t->b].active) return 0;
     if (u->w[t->a].brand != u->w[t->b].brand) return 0; /* split by a draft */
     return brand == U_NONE || u->w[t->a].brand == brand;
 }
@@ -570,6 +653,13 @@ static int allies(const Universe *u, uint8_t a, uint8_t b)
     return u_ally_level(u, a, b) >= U_ALLY_CLOSE;
 }
 
+static int teams_allied(const Universe *u, uint8_t x, uint8_t y)
+{
+    const UTeam *a = &u->tm[x], *b = &u->tm[y];
+    return allies(u, a->a, b->a) || allies(u, a->a, b->b) ||
+           allies(u, a->b, b->a) || allies(u, a->b, b->b);
+}
+
 static int in_rivalry(const Universe *u, uint8_t id)
 {
     int i;
@@ -666,6 +756,7 @@ static UMatch *new_match(Booker *b, uint8_t format, uint8_t title, uint8_t stip)
     m->referee = U_NONE;
     m->winner = U_NONE;
     m->injured = U_NONE;
+    m->run_in = m->run_in_for = U_NONE;
     for (k = 0; k < 3; k++) {
         m->team[k] = U_NONE;
         m->side[k][0] = m->side[k][1] = U_NONE;
@@ -1043,6 +1134,7 @@ void u_book_show(Universe *u, UShow *s)
     int nm, nw, nt, i, j, t, ppv, women_booked = 0;
 
     u_zero(s, sizeof *s);
+    s->team_formed = s->team_split = U_NONE;
     s->week = u->week;
     u_next_show(u, &s->kind, &s->brand);   /* (Raw / SmackDown: names only) */
     ppv = s->kind == U_SHOW_PPV;
@@ -1154,6 +1246,22 @@ void u_book_show(Universe *u, UShow *s)
         }
     }
 
+    /* a new team's debut: against the free team closest in the ranking */
+    for (t = 0; t < u->n_teams && s->count < b.max; t++) {
+        int at = -1, pick = -1;
+        if (!u->tm[t].debut || !team_free(&b, (uint8_t)t)) continue;
+        for (j = 0; j < nt; j++) if (trank[j] == t) at = j;
+        for (j = 0; j < nt; j++) {
+            if (trank[j] == t || !team_free(&b, trank[j]) || is_tag_champion(u, trank[j]) ||
+                teams_allied(u, (uint8_t)t, trank[j]))
+                continue;
+            if (pick < 0 || (at >= 0 && (j > at ? j - at : at - j) <
+                                        (pick > at ? pick - at : at - pick)))
+                pick = j;
+        }
+        if (pick >= 0) book_tag(&b, (uint8_t)t, trank[pick], U_NONE, U_STIP_NORMAL);
+    }
+
     for (i = 0; s->count < b.max && (ppv || i < U_WEEKLY_FEUDS); i++) {
         int ri = best_open_rivalry(&b, U_NONE);
         if (ri < 0) break;
@@ -1166,15 +1274,18 @@ void u_book_show(Universe *u, UShow *s)
     if (!women_booked && s->count < b.max)
         while (book_regular(&b, women, nw) == 0) {}
 
-    for (i = 0; i < nt && s->count < b.max; i++) {
-        if (!team_free(&b, trank[i]) || is_tag_champion(u, trank[i])) continue;
-        for (j = i + 1; j < nt; j++) {
-            if (team_free(&b, trank[j]) && !is_tag_champion(u, trank[j])) {
-                book_tag(&b, trank[i], trank[j], U_NONE, U_STIP_NORMAL);
-                break;
-            }
-        }
-        break; /* one extra tag match per show */
+    if (s->count < b.max) {      /* one extra tag match per show: the team that */
+        int x = -1, y = -1;      /* has waited longest vs the closest in the ranking */
+        for (i = 0; i < nt; i++)
+            if (team_free(&b, trank[i]) && !is_tag_champion(u, trank[i]) &&
+                (x < 0 || u->tm[trank[i]].last_show < u->tm[trank[x]].last_show))
+                x = i;
+        for (j = 0; x >= 0 && j < nt; j++)
+            if (j != x && team_free(&b, trank[j]) && !is_tag_champion(u, trank[j]) &&
+                !teams_allied(u, trank[x], trank[j]) &&
+                (y < 0 || (j > x ? j - x : x - j) < (y > x ? y - x : x - y)))
+                y = j;
+        if (y >= 0) book_tag(&b, trank[x], trank[y], U_NONE, U_STIP_NORMAL);
     }
 
     /* Weekly TV sometimes has a Triple Threat or a Handicap match among
@@ -1325,6 +1436,26 @@ static uint8_t sim_rumble(Universe *u, const UMatch *m)
     return (uint8_t)(m->n_entrants - 1);
 }
 
+/* Who may make the save for id against opp: a healthy wrestler not in the
+ * match, of id's gender and alignment, in a rivalry (U_FEUD_SET+) with opp */
+static uint8_t save_from(const Universe *u, const UMatch *m, uint8_t id, uint8_t opp)
+{
+    int i, best = -1;
+    uint8_t who = U_NONE;
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        const URivalry *r = &u->r[i];
+        uint8_t c;
+        if (r->intensity < U_FEUD_SET || (r->a != opp && r->b != opp)) continue;
+        c = r->a == opp ? r->b : r->a;
+        if (c == id || in_match(m, c) || !u->w[c].active || u->w[c].injured_weeks ||
+            u->w[c].role != U_ROLE_REGULAR || u->w[c].gender != u->w[id].gender ||
+            u->w[c].align != u->w[id].align)
+            continue;
+        if (r->intensity > best) { best = r->intensity; who = c; }
+    }
+    return who;
+}
+
 void u_sim_match(Universe *u, UMatch *m)
 {
     uint32_t roll;
@@ -1339,6 +1470,30 @@ void u_sim_match(Universe *u, UMatch *m)
     }
 
     m->winner = sim_winner(u, m);
+    m->run_in = m->run_in_for = U_NONE;
+    if (m->format != U_FMT_TAG && m->stip != U_STIP_CAGE) {
+        /* a companion at ringside may run in to help (not into a cage);
+         * in a 1 on 1 feud, so may a hot rival of the opponent who is on
+         * the same side of the fence (the enemy of my enemy) */
+        int k;
+        for (k = 0; k < 6 && m->run_in == U_NONE; k++) {
+            uint8_t id = m->side[k / 2][k % 2], c;
+            if (id == U_NONE || (c = u_companion(u, m, id)) == U_NONE) continue;
+            if (u_rand(u, 100) < U_RUN_IN_CHANCE) {
+                m->run_in = c;
+                m->run_in_for = id;
+            }
+        }
+        if (m->run_in == U_NONE && m->format == U_FMT_SINGLE && m->rivalry != U_NONE &&
+            u_rand(u, 100) < U_SAVE_CHANCE) {
+            int side = (int)u_rand(u, 2);
+            uint8_t id = m->side[side][0], opp = m->side[1 - side][0], c = save_from(u, m, id, opp);
+            if (c != U_NONE) {
+                m->run_in = c;
+                m->run_in_for = id;
+            }
+        }
+    }
     roll = u_rand(u, 100);
     switch (m->stip) {
     case U_STIP_CAGE:
@@ -1378,6 +1533,7 @@ int u_set_result(UMatch *m, uint8_t winning_side, uint8_t method)
     m->winner = winning_side;
     m->method = method;
     m->source = U_SRC_PLAYED;
+    m->run_in = m->run_in_for = U_NONE;     /* (the game stages its own run-ins) */
     m->done = 1;
     return 0;
 }
@@ -1391,6 +1547,7 @@ int u_set_draw(UMatch *m)
     m->winner = U_NONE;
     m->method = U_WIN_DRAW;
     m->source = U_SRC_PLAYED;
+    m->run_in = m->run_in_for = U_NONE;
     m->done = 1;
     return 0;
 }
@@ -1410,6 +1567,7 @@ int u_set_ironman_result(UMatch *m, const uint8_t *falls)
     m->winner = (uint8_t)best;
     m->method = U_WIN_FALLS;
     m->source = U_SRC_PLAYED;
+    m->run_in = m->run_in_for = U_NONE;
     m->done = 1;
     return 0;
 }
@@ -1671,6 +1829,206 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
     }
 }
 
+/* ---- allies and tag teams over time ---- */
+
+/* Teaming, a companion at ringside, run-in saves and common rivals keep
+ * pairs together; every pair that wasn't together this show fades. */
+static void allies_after_show(Universe *u, UShow *s)
+{
+    uint8_t near[U_MAX_ALLIES];
+    int i, j, k, x;
+    u_zero(near, sizeof near);
+    for (i = 0; i < s->count; i++) {
+        UMatch *m = &s->m[i];
+        if (!m->done || m->format == U_FMT_RUMBLE) continue;
+        if (m->format == U_FMT_TAG)
+            for (k = 0; k < 2; k++) {
+                if ((x = ally_bump(u, m->side[k][0], m->side[k][1],
+                                   U_ALLY_TEAMING + (m->winner == k ? 2 : 0))) >= 0)
+                    near[x] = 1;
+                if (m->team[k] != U_NONE) u->tm[m->team[k]].debut = 0;
+            }
+        if (m->format == U_FMT_HANDICAP &&
+            (x = ally_bump(u, m->side[1][0], m->side[1][1], U_ALLY_HANDICAP)) >= 0)
+            near[x] = 1;
+        if (m->run_in != U_NONE) {
+            /* the save: a bond with the wrestler helped, an enemy across
+             * the ring (a new rivalry, or more heat) */
+            int k2;
+            if ((x = ally_bump(u, m->run_in, m->run_in_for, U_ALLY_RUN_IN)) >= 0) near[x] = 1;
+            for (k2 = 0; k2 < 6; k2++) {
+                uint8_t o = m->side[k2 / 2][k2 % 2];
+                int side_of_helped = 0, kk, ri;
+                for (kk = 0; kk < 2; kk++) side_of_helped |= m->side[k2 / 2][kk] == m->run_in_for;
+                if (o == U_NONE || side_of_helped || u->w[o].gender != u->w[m->run_in].gender ||
+                    u_ally_level(u, o, m->run_in) >= U_ALLY_CLOSE)
+                    continue;
+                ri = find_rivalry(u, o, m->run_in);
+                if (ri >= 0) u->r[ri].intensity = (uint8_t)clamp(u->r[ri].intensity + 10, 1, 100);
+                else u_add_rivalry(u, o, m->run_in, U_RUN_IN_HEAT);
+            }
+        }
+        for (k = 0; k < 6; k++) {                     /* companions at ringside */
+            uint8_t id = m->side[k / 2][k % 2], c;
+            if (id == U_NONE || (c = u_companion(u, m, id)) == U_NONE) continue;
+            if ((x = ally_bump(u, id, c, 0)) >= 0) near[x] = 1;
+        }
+    }
+    for (i = 0; i < U_MAX_RIVALRIES; i++)              /* a common enemy */
+        for (j = i + 1; j < U_MAX_RIVALRIES; j++) {
+            const URivalry *p = &u->r[i], *q = &u->r[j];
+            uint8_t a, b;
+            if (p->intensity < U_FEUD_SET || q->intensity < U_FEUD_SET) continue;
+            if (p->a == q->a)      { a = p->b; b = q->b; }
+            else if (p->a == q->b) { a = p->b; b = q->a; }
+            else if (p->b == q->a) { a = p->a; b = q->b; }
+            else if (p->b == q->b) { a = p->a; b = q->a; }
+            else continue;
+            if (a == b || u->w[a].gender != u->w[b].gender || u->w[a].align != u->w[b].align ||
+                (u->w[a].persona && u->w[a].persona == u->w[b].persona))
+                continue;
+            if ((x = ally_bump(u, a, b, U_ALLY_COMMON)) >= 0) near[x] = 1;
+        }
+    for (i = 0; i < U_MAX_ALLIES; i++)
+        if (near[i]) u->al[i].together = 1;
+}
+
+/* Weekly: pairs that weren't together all week fade */
+static void allies_week(Universe *u)
+{
+    int i;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        UAlly *x = &u->al[i];
+        if (x->level && !x->together)
+            x->level = (uint8_t)clamp(x->level - U_ALLY_FADE, 0, 100);
+        x->together = 0;
+    }
+}
+
+static int in_team(const Universe *u, uint8_t id)
+{
+    int t;
+    for (t = 0; t < u->n_teams; t++)
+        if (!u->tm[t].split && (u->tm[t].a == id || u->tm[t].b == id)) return 1;
+    return 0;
+}
+
+/* "A & B", or shorter forms when that doesn't fit: "A&B", then last names
+ * (never one shorter than 3 letters: "Triple H" stays whole) */
+static const char *last_name(const char *n)
+{
+    const char *c = n, *sp = n;
+    int len;
+    for (; *c; c++) if (*c == ' ') sp = c + 1;
+    for (len = 0; sp[len]; len++) {}
+    return len >= 3 ? sp : n;
+}
+
+static void team_name(const Universe *u, uint8_t a, uint8_t b, char *out)
+{
+    const char *full[2], *nm[2];
+    char buf[3 * U_NAME_LEN];
+    int form, k, n = 0;
+    full[0] = u->w[a].name;
+    full[1] = u->w[b].name;
+    for (form = 0; form < 8; form++) {           /* (names x 4) x (" & ", "&") */
+        nm[0] = (form / 2) & 2 ? last_name(full[0]) : full[0];
+        nm[1] = (form / 2) & 1 ? last_name(full[1]) : full[1];
+        n = 0;
+        for (k = 0; k < 2; k++) {
+            const char *c = nm[k];
+            if (k) {
+                if (form % 2 == 0) { buf[n++] = ' '; buf[n++] = '&'; buf[n++] = ' '; }
+                else buf[n++] = '&';
+            }
+            while (*c) buf[n++] = *c++;
+        }
+        buf[n] = 0;
+        if (n < U_NAME_LEN) break;
+    }
+    u_set_name(out, buf);
+}
+
+static int team_in_history(const Universe *u, int team)
+{
+    int t, k;
+    for (t = 0; t < u->n_titles; t++)
+        if (u->t[t].kind == U_TITLE_TAG)
+            for (k = 0; k < U_MAX_REIGNS && k < u->t[t].reign_count; k++)
+                if (u->t[t].history[k].holder == team) return 1;
+    return 0;
+}
+
+/* A new team enters the tag ranking at the bottom, with a debut match to
+ * come; a broken-up team's slot is reused if no title history names it. */
+static int form_team(Universe *u, uint8_t a, uint8_t b)
+{
+    int id = -1, i, low = -1;
+    UTeam *t;
+    if (u->n_teams < U_MAX_TEAMS) {
+        id = u->n_teams++;
+    } else {
+        for (i = 0; i < u->n_teams && id < 0; i++)
+            if (u->tm[i].split && !team_in_history(u, i)) id = i;
+        if (id < 0) return -1;
+    }
+    for (i = 0; i < u->n_teams; i++)
+        if (i != id && team_on_brand(u, (uint8_t)i, U_NONE) &&
+            (low < 0 || u->tm[i].points < low))
+            low = u->tm[i].points;
+    t = &u->tm[id];
+    u_zero(t, sizeof *t);
+    team_name(u, a, b, t->name);
+    t->a = a;
+    t->b = b;
+    t->active = u->w[a].active && u->w[b].active;
+    t->points = (uint16_t)(low > 0 ? low - 1 : 0);
+    t->low_weeks = -U_TEAM_GRACE;
+    t->debut = 1;
+    return id;
+}
+
+/* Weekly: a team low in the tag ranking for weeks may split (tag champions
+ * never do), the closest free pair of men may become a team. */
+static void teams_week(Universe *u, UShow *s)
+{
+    uint8_t rank[U_MAX_TEAMS];
+    int n = u_team_rankings(u, U_NONE, rank, U_MAX_TEAMS), p, i, best = -1;
+    for (p = 0; p < n; p++) {
+        UTeam *t = &u->tm[rank[p]];
+        if (t->low_weeks < 0) t->low_weeks++;
+        else if (p >= n - U_TEAM_LOW) t->low_weeks = (int8_t)clamp(t->low_weeks + 1, 0, 100);
+        else t->low_weeks = 0;
+    }
+    for (p = n - 1; p >= 0 && n > U_TEAM_MIN; p--) {
+        UTeam *t = &u->tm[rank[p]];
+        if (t->low_weeks < U_TEAM_LOW_WEEKS || is_tag_champion(u, rank[p])) continue;
+        if ((int)u_rand(u, 100) < U_TEAM_SPLIT_CHANCE + (t->streak <= -3 ? U_TEAM_SPLIT_STREAK : 0)) {
+            t->split = 1;
+            t->debut = 0;
+            ally_bump(u, t->a, t->b, -100);              /* ally level resets */
+            if (u_rand(u, 100) < 50 && find_rivalry(u, t->a, t->b) < 0)
+                u_add_rivalry(u, t->a, t->b, 30);        /* bitter: a low-level feud */
+            s->team_split = rank[p];
+        }
+        break;                                           /* one a week at most */
+    }
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        const UWrestler *a = &u->w[x->a], *b = &u->w[x->b];
+        if (x->level < U_ALLY_TEAM || a->role != U_ROLE_REGULAR || b->role != U_ROLE_REGULAR ||
+            a->gender != U_MALE || b->gender != U_MALE || !a->active || !b->active ||
+            a->injured_weeks || b->injured_weeks || in_team(u, x->a) || in_team(u, x->b) ||
+            (a->persona && a->persona == b->persona) || find_rivalry(u, x->a, x->b) >= 0)
+            continue;
+        if (best < 0 || x->level > u->al[best].level) best = i;
+    }
+    if (best >= 0 && u_rand(u, 100) < U_TEAM_FORM_CHANCE) {
+        int id = form_team(u, u->al[best].a, u->al[best].b);
+        if (id >= 0) s->team_formed = (uint8_t)id;
+    }
+}
+
 void u_apply_show(Universe *u, UShow *s)
 {
     uint8_t touched[U_MAX_RIVALRIES];
@@ -1692,6 +2050,8 @@ void u_apply_show(Universe *u, UShow *s)
                 u->w[m->side[k / 2][k % 2]].last_show = (uint16_t)(4u * u->week + u->slot);
         for (k = 0; m->format == U_FMT_RUMBLE && k < m->n_entrants; k++)
             u->w[m->entrant[k]].last_show = (uint16_t)(4u * u->week + u->slot);
+        for (k = 0; m->format == U_FMT_TAG && k < 2; k++)
+            if (m->team[k] != U_NONE) u->tm[m->team[k]].last_show = (uint16_t)(4u * u->week + u->slot);
         apply_match(u, s, m, touched);
     }
 
@@ -1700,7 +2060,13 @@ void u_apply_show(Universe *u, UShow *s)
     for (i = 0; i < U_MAX_RIVALRIES; i++) {
         URivalry *r = &u->r[i];
         if (!r->intensity || touched[i]) continue;
-        r->intensity = (uint8_t)clamp(r->intensity - 5, 0, 100);
+        r->intensity = (uint8_t)clamp(r->intensity - U_FEUD_COOL, 0, 100);
+    }
+    allies_after_show(u, s);
+    s->team_formed = s->team_split = U_NONE;
+    if (u->slot == 0) {
+        allies_week(u);
+        teams_week(u, s);
     }
     if (wrestlemania) u->rumble_winner = U_NONE;   /* the shot is used (or lost) */
 
@@ -1786,6 +2152,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
         w8(&w, t->a); w8(&w, t->b); w8(&w, t->active);
         w16(&w, t->wins); w16(&w, t->losses);
         w16(&w, t->points); w8(&w, (uint8_t)t->streak);
+        w8(&w, t->split); w8(&w, (uint8_t)t->low_weeks); w8(&w, t->debut); w16(&w, t->last_show);
     }
     for (i = 0; i < U_MAX_TITLES; i++) {
         const UTitle *t = &u->t[i];
@@ -1806,7 +2173,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
     }
     for (i = 0; i < U_MAX_ALLIES; i++) {
         const UAlly *x = &u->al[i];
-        w8(&w, x->a); w8(&w, x->b); w8(&w, x->level);
+        w8(&w, x->a); w8(&w, x->b); w8(&w, x->level); w8(&w, x->together);
     }
     if (w.err) return -1;
     w16(&w, fletcher16(buf, w.n));
@@ -1867,6 +2234,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         t->a = r8(&r); t->b = r8(&r); t->active = r8(&r);
         t->wins = r16(&r); t->losses = r16(&r);
         t->points = r16(&r); t->streak = (int8_t)r8(&r);
+        t->split = r8(&r); t->low_weeks = (int8_t)r8(&r); t->debut = r8(&r); t->last_show = r16(&r);
         if (i < nteams && (t->a >= nw || t->b >= nw || t->a == t->b))
             return load_fail(u, -6);
     }
@@ -1892,7 +2260,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
     }
     for (i = 0; i < U_MAX_ALLIES; i++) {
         UAlly *x = &u->al[i];
-        x->a = r8(&r); x->b = r8(&r); x->level = r8(&r);
+        x->a = r8(&r); x->b = r8(&r); x->level = r8(&r); x->together = r8(&r);
         if (x->level && (x->a >= nw || x->b >= nw || x->a == x->b || x->level > 100))
             return load_fail(u, -6);
     }

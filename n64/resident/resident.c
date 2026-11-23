@@ -419,9 +419,71 @@ static void write_belt(void)
     }
 }
 
+/* The story in the game (plan step 7): each wrestler's ALLY/ENEMY data -
+ * Rival 1-3 and Accompanied by, 12-bit wrestler ids packed MSB first at
+ * bits 149, 161, 173 and 185 of his relation record - is rewritten from
+ * the Universe for the match, so the game's own run-ins follow the story.
+ * The records come from the ROM (the save never holds them); the
+ * originals are put back when the director is done, where the bytes are
+ * still the ones written (notes/re-findings.md). */
+#define WRESTLER_BLOCKS   0x80047F34u    /* u32: built-in wrestlers' 0xD8-byte blocks, by number */
+#define REL_RECORD(base, n) ((base) + 0xD8u * (n) + 0xB8u)
+#define REL_FIRST_BIT     149
+#define REL_BYTES         7              /* bytes 18-24 hold bits 144-199 */
+static struct { uint32_t addr; uint8_t orig[REL_BYTES], wrote[REL_BYTES]; } drel[4];
+static uint8_t n_drel;
+
+static void put_bits(uint32_t addr, unsigned bit, unsigned width, unsigned v)
+{
+    unsigned k;
+    for (k = 0; k < width; k++) {
+        unsigned b = bit + k;
+        uint8_t mask = (uint8_t)(0x80u >> (b & 7));
+        if ((v >> (width - 1 - k)) & 1) RAM8(addr + b / 8) |= mask;
+        else RAM8(addr + b / 8) &= (uint8_t)~mask;
+    }
+}
+
+static void write_relations(void)
+{
+    uint32_t base = RAM32(WRESTLER_BLOCKS);
+    int s, k, j;
+    n_drel = 0;
+    if (base < 0x80100000u || base >= 0x80400000u) return;   /* (not loaded) */
+    for (s = 0; s < 4; s++) {
+        uint8_t n = dsetup.wrestler[s];
+        uint32_t rec;
+        if (!(dsetup.rel_set & (1u << s)) || n < 1 || n > 64) continue;
+        rec = REL_RECORD(base, n);
+        for (j = 0; j < n_drel && drel[j].addr != rec; j++) {}
+        if (j < n_drel) continue;                 /* (shared game number) */
+        for (k = 0; k < REL_BYTES; k++) drel[n_drel].orig[k] = RAM8(rec + 18 + k);
+        for (k = 0; k < 4; k++) {
+            uint8_t who = dsetup.rel[s][k];
+            put_bits(rec, REL_FIRST_BIT + 12u * (unsigned)k, 12,
+                     who ? (unsigned)game_id(who) & 0xFFFu : 0u);
+        }
+        for (k = 0; k < REL_BYTES; k++) drel[n_drel].wrote[k] = RAM8(rec + 18 + k);
+        drel[n_drel++].addr = rec;
+    }
+}
+
+static void restore_relations(void)
+{
+    int j, k;
+    for (j = 0; j < n_drel; j++) {
+        int same = 1;
+        for (k = 0; k < REL_BYTES; k++) same &= RAM8(drel[j].addr + 18 + k) == drel[j].wrote[k];
+        if (same)
+            for (k = 0; k < REL_BYTES; k++) RAM8(drel[j].addr + 18 + k) = drel[j].orig[k];
+    }
+    n_drel = 0;
+}
+
 static void director_start(int watch)
 {
     us_pending_setup(&dsetup);
+    write_relations();
     if (dsetup.belt >= 0) {
         dsaved_champion[0] = RAM8(CHAMPION(dsetup.belt));
         dsaved_champion[1] = RAM8(CHAMPION(dsetup.belt) + 1);
@@ -453,6 +515,7 @@ static void director_end_match(void)
     }
     RAM32(SETUP_BELT) = 0xFFFFFFFFu;
     restore_rules();
+    restore_relations();
     us_match_closed();
 }
 
@@ -573,6 +636,7 @@ static void director_tick(void)
             us_cover(0);
             RAM8(UNIVERSE_ITEM_MODE) = MODE_SURVIVAL;
             restore_rules();
+            restore_relations();
             dstate = D_FAIL;
         }
         break;

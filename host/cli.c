@@ -120,6 +120,14 @@ static void print_status(const Universe *u)
         printf("  %-16s %u week%s\n", u->w[rank[i]].name, u->w[rank[i]].injured_weeks,
                u->w[rank[i]].injured_weeks == 1 ? "" : "s");
     if (!n) printf("  (none)\n");
+    printf("\n== Allies ==\n");
+    for (i = 0, k = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        if (!x->level) continue;
+        printf("  %3u %s & %s\n", x->level, u->w[x->a].name, u->w[x->b].name);
+        k++;
+    }
+    if (!k) printf("  (none)\n");
     printf("\n== Rivalries ==\n");
     for (i = 0, k = 0; i < U_MAX_RIVALRIES; i++) {
         const URivalry *r = &u->r[i];
@@ -237,7 +245,15 @@ static void run_show(Universe *u, int play)
             printf("  %s wins the Royal Rumble!\n", u->w[m->entrant[m->winner]].name);
         if (m->kotr == U_KOTR_MATCHES && m->done)
             printf("  %s is crowned King of the Ring!\n", side_name(u, m, m->winner));
+        if (m->run_in != U_NONE)
+            printf("  Run-in: %s comes to help %s.\n", u->w[m->run_in].name,
+                   u->w[m->run_in_for].name);
     }
+    if (s.team_formed != U_NONE)
+        printf("  NEW TAG TEAM: %s (%s & %s).\n", u->tm[s.team_formed].name,
+               u->w[u->tm[s.team_formed].a].name, u->w[u->tm[s.team_formed].b].name);
+    if (s.team_split != U_NONE)
+        printf("  %s have split up.\n", u->tm[s.team_split].name);
     printf("\n");
 }
 

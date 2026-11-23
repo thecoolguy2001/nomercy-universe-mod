@@ -256,6 +256,13 @@ static void finish_show(void)
             s_add(&s, " vs ");
             s_add(&s, side(m, 1));
         }
+        if (m->run_in != U_NONE && n_headlines < MAX_LINES) {
+            s_init(&s, headline[n_headlines++], LINE_LEN);
+            s_add(&s, "Run-in: ");
+            s_add(&s, U.w[m->run_in].name);
+            s_add(&s, " helps ");
+            s_add(&s, U.w[m->run_in_for].name);
+        }
         if (m->injured != U_NONE && n_headlines < MAX_LINES) {
             s_init(&s, headline[n_headlines++], LINE_LEN);
             s_add(&s, "Injured: ");
@@ -264,6 +271,16 @@ static void finish_show(void)
             s_num(&s, m->injury_weeks);
             s_add(&s, m->injury_weeks == 1 ? " week" : " weeks");
         }
+    }
+    if (SHOW.team_formed != U_NONE && n_headlines < MAX_LINES) {
+        s_init(&s, headline[n_headlines++], LINE_LEN);
+        s_add(&s, "NEW TAG TEAM: ");
+        s_add(&s, U.tm[SHOW.team_formed].name);
+    }
+    if (SHOW.team_split != U_NONE && n_headlines < MAX_LINES) {
+        s_init(&s, headline[n_headlines++], LINE_LEN);
+        s_add(&s, U.tm[SHOW.team_split].name);
+        s_add(&s, " have split up");
     }
     if (!n_headlines) {
         s_init(&s, headline[n_headlines++], LINE_LEN);
@@ -426,12 +443,29 @@ static void rumble_setup(const UMatch *m, USetup *st)
     st->champion[0] = st->champion[1] = 0;
 }
 
+/* A wrestler's hottest rivals and his companion, for the game's own
+ * run-ins (plan step 7). Two characters sharing a game number share its
+ * data: the first one in the match writes it. */
+static void story(const UMatch *m, uint8_t id, int slot, USetup *st)
+{
+    uint8_t riv[3], c;
+    int k, n;
+    for (k = 0; k < slot; k++)
+        if ((st->rel_set & (1u << k)) && st->wrestler[k] == gnum(id)) return;
+    n = u_top_rivals(&U, id, riv, 3);
+    for (k = 0; k < 3; k++) st->rel[slot][k] = k < n ? gnum(riv[k]) : 0;
+    c = u_companion(&U, m, id);
+    st->rel[slot][3] = c != U_NONE ? gnum(c) : 0;
+    st->rel_set |= (uint8_t)(1u << slot);
+}
+
 void us_pending_setup(USetup *st)
 {
     const UMatch *m = &SHOW.m[pending];
     int i, ref = m->stip == U_STIP_REFEREE, n = FMT_SLOTS[m->format];
     st->preset_each = 0;
     st->rumble_n = 0;
+    st->rel_set = 0;
     if (m->format == U_FMT_RUMBLE) {
         rumble_setup(m, st);
         return;
@@ -460,6 +494,7 @@ void us_pending_setup(USetup *st)
         uint8_t id = m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]];
         st->wrestler[ref + i] = gnum(id);
         st->attire[ref + i] = gatt(id);
+        story(m, id, ref + i, st);
     }
     /* Play: the player's wrestler (and the CPU partner in Tag / Handicap,
      * as the game marks it), or the guest referee; Watch: all CPU */
@@ -791,7 +826,11 @@ void us_draw(void *holder)
     text(holder, line[0], 38);
 
     if (view == 1) {
-        for (i = 0; i < n_headlines; i++) small(holder, headline[i], 62 + i * 15);
+        for (i = 0; i < n_headlines; i++) {     /* long lines smaller, inside the panel */
+            int len = 0;
+            while (headline[i][len]) len++;
+            text_scaled(holder, headline[i], 62 + i * 15, len > 34 ? 0xB0 : len > 30 ? 0xC4 : 0xD8);
+        }
         text(holder, "$0Next Show   $1Back", 198);
         small(holder, "$2Rankings", 214);
         return;

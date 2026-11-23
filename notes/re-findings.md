@@ -537,3 +537,25 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   with weights 50 / 30 / 20 (mutual Rival 1 = 65); mutual "accompanied by"
   = ally 90, one-sided 75, same companion 50 (+20 with a rival in common);
   men at ally 70+ form the starting tag teams.
+
+## Rivals and allies in the match (plan step 7, 2026-11-23)
+- Built-in wrestler n's 0xD8-byte block: *(u32 *)0x80047F34 + 0xD8 * n
+  (0x803208D0 in menus and while a match loads; edit slots use
+  *(u32 *)0x80047F3C). 0x8000AF08(id) -> index, 0x8000B5F0(index) -> block.
+  The relation record (rival 1-3, accompanied by; see above) is the
+  block's last 0x20 bytes, +0xB8 (so The Rock's is 0x80320A60).
+- Match load (A on the loading screen) copies the whole block of each
+  wrestler into the setup slot (0x80099514 + 0x114 * slot, 0x8000BB68) and
+  unpacks the relation record from the block itself (bit reader
+  0x800061E4, ~650-1650 frames later, one wrestler after another) - so
+  values written before the loading screen reach the match.
+- The relation bits match the ROM (records at ROM 0x28EB7E, 0xD8 apart);
+  the flash save holds none of them (searched every save file).
+- The resident writes Universe rivals / companion at director start and
+  restores the bytes at director end (only if they are still the written
+  ones). Verified: written on Superstar Select, all 64 records equal the
+  game's again after backing out.
+- "Accompanied by" does not bring anyone out at the entrance (Eddie
+  Guerrero / Chyna in the game's data, Mr. Ass / Road Dogg written): its
+  in-match use is the game's interference logic (not observed in short
+  test matches).

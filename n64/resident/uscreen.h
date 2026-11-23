@@ -29,6 +29,11 @@ typedef struct {
     uint8_t preset_each;    /* the cursor is moved for every pick (same picker back to back) */
     uint8_t rumble_n;       /* Royal Rumble: entrants (4-40), 0 = not a Rumble */
     uint8_t rumble[US_RUMBLE_MAX]; /* their wrestler numbers in entry order */
+    /* The story written into the game for this match (its ALLY/ENEMY data,
+     * restored afterwards): per slot whose bit is set in rel_set, Rival 1-3
+     * (hottest first) and Accompanied by, as wrestler numbers (0 = none) */
+    uint8_t rel_set;
+    uint8_t rel[4][4];
 } USetup;
 void us_pending_setup(USetup *st);
 

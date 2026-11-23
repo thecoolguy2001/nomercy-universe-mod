@@ -1081,6 +1081,215 @@ static void test_title_pictures(void)
     CHECK(top * 100 >= all * 95 && first * 100 >= all * 50);   /* (100% / 58% seen) */
 }
 
+static int is_tag_champ(const Universe *u, uint8_t team)
+{
+    int i;
+    for (i = 0; i < u->n_titles; i++)
+        if (u->t[i].kind == U_TITLE_TAG && u_title_holder(u, (uint8_t)i) == team) return 1;
+    return 0;
+}
+
+/* the level of a pair, or -1 when they aren't allies at all */
+static int ally_of(const Universe *u, uint8_t a, uint8_t b)
+{
+    int l = u_ally_level(u, a, b);
+    return l ? l : -1;
+}
+
+/* one week of shows (first show applied first: the weekly updates run) */
+static void run_week(Universe *u)
+{
+    do run_shows(u, 1); while (u->slot != 0);
+}
+
+/* Plan step 7: allies over time, teams forming and splitting */
+static void test_allies_over_time(void)
+{
+    Universe u;
+    UShow e;
+    UMatch m;
+    uint8_t ids[8], a, b, c, d;
+    int i, n, t;
+    roster_universe(&u, 21);
+    for (i = 0; i < u.n_wrestlers; i++) u.w[i].injured_weeks = 0;
+    for (i = 0; i < U_MAX_RIVALRIES; i++) u.r[i].intensity = 0;  /* (no common enemies) */
+    /* teaming: partners +4 a tag match (+2 more for winning) */
+    t = team_named(&u, "Hardy Boyz", "Matt Hardy", "Jeff Hardy");
+    i = team_named(&u, "APA", "Faarooq", "Bradshaw");
+    n = u_ally_level(&u, u.tm[t].a, u.tm[t].b);
+    play_one(&u, 0, U_FMT_TAG, u.tm[t].a, u.tm[t].b, u.tm[i].a, u.tm[i].b,
+             (uint8_t)t, (uint8_t)i, 0);
+    CHECK(u_ally_level(&u, u.tm[t].a, u.tm[t].b) == (n + 6 > 100 ? 100 : n + 6));
+    /* a handicap pair: +10 (a new pair starts there) */
+    a = (uint8_t)by_name(&u, "Kane"); b = (uint8_t)by_name(&u, "Rikishi");
+    c = (uint8_t)by_name(&u, "The Rock"); d = (uint8_t)by_name(&u, "Undertaker");
+    CHECK(u_ally_level(&u, a, b) == 0);
+    play_one(&u, 0, U_FMT_HANDICAP, c, U_NONE, a, b, U_NONE, U_NONE, 0);
+    CHECK(u_ally_level(&u, a, b) == 10);
+    /* companions: the strongest ally from 50 up, healthy, not in the match */
+    memset(&m, 0xFF, sizeof m);
+    m.side[0][0] = (uint8_t)by_name(&u, "Val Venis");
+    m.side[1][0] = (uint8_t)by_name(&u, "Test");
+    CHECK(u_companion(&u, &m, m.side[0][0]) == by_name(&u, "Trish Stratus"));
+    CHECK(u_companion(&u, &m, (uint8_t)by_name(&u, "The Rock")) == U_NONE);
+    u.w[by_name(&u, "Trish Stratus")].injured_weeks = 1;   /* then Albert (50; Test is */
+    CHECK(u_companion(&u, &m, m.side[0][0]) == by_name(&u, "Albert"));   /* in the match) */
+    u.w[by_name(&u, "Trish Stratus")].injured_weeks = 0;
+    m.side[1][0] = (uint8_t)by_name(&u, "Trish Stratus");
+    CHECK(u_companion(&u, &m, m.side[0][0]) == by_name(&u, "Test"));
+    {   /* below 50: nobody */
+        Universe w2 = u;
+        int j;
+        for (j = 0; j < U_MAX_ALLIES; j++)
+            if (w2.al[j].level && (w2.al[j].a == m.side[0][0] || w2.al[j].b == m.side[0][0]) &&
+                w2.al[j].level < 90)
+                w2.al[j].level = 49;
+        CHECK(u_companion(&w2, &m, m.side[0][0]) == U_NONE);
+    }
+    CHECK(u_companion(&u, &m, (uint8_t)by_name(&u, "Edge")) == by_name(&u, "Christian"));
+    /* a run-in save: +10 with the wrestler helped, a rivalry with the
+     * other side */
+    {
+        UShow s1;
+        UMatch *x = &s1.m[0];
+        memset(&s1, 0, sizeof s1);
+        s1.kind = U_SHOW_WEEKLY;
+        s1.count = 1;
+        memset(x, 0xFF, sizeof *x);
+        x->format = U_FMT_SINGLE; x->stip = U_STIP_NORMAL;
+        x->kotr = 0; x->n_entrants = 0;
+        x->side[0][0] = c;
+        x->side[1][0] = (uint8_t)by_name(&u, "Kurt Angle");
+        CHECK(u_set_result(x, 0, U_WIN_PINFALL) == 0);
+        x->run_in = d;                       /* (as u_sim_match would) */
+        x->run_in_for = c;
+        n = u_ally_level(&u, c, d);
+        u.slot = 1;
+        u_apply_show(&u, &s1);
+        CHECK(u_ally_level(&u, c, d) == n + 10);
+        n = u_top_rivals(&u, d, ids, 8);
+        for (i = 0; i < n && ids[i] != x->side[1][0]; i++) {}
+        CHECK(i < n);
+    }
+    /* a common enemy: +5 a show for two wrestlers of the same alignment */
+    {
+        uint8_t p = (uint8_t)by_name(&u, "Chris Jericho"), q = (uint8_t)by_name(&u, "Mankind");
+        uint8_t enemy = (uint8_t)by_name(&u, "Triple H");
+        for (i = 0; i < U_MAX_RIVALRIES; i++) u.r[i].intensity = 0;
+        u_add_rivalry(&u, p, enemy, 60);
+        u_add_rivalry(&u, q, enemy, 60);
+        CHECK(u.w[p].align == u.w[q].align);
+        memset(&e, 0, sizeof e);
+        e.kind = U_SHOW_WEEKLY;
+        u.slot = 1;
+        n = u_ally_level(&u, p, q);
+        u_apply_show(&u, &e);
+        CHECK(u_ally_level(&u, p, q) == n + 5);
+        /* top rivals: hottest first */
+        u_add_rivalry(&u, p, c, 90);
+        CHECK(u_top_rivals(&u, p, ids, 8) == 2 && ids[0] == c && ids[1] == enemy);
+    }
+    /* a week apart: -2; together (a companion at ringside): kept */
+    {
+        uint8_t v = (uint8_t)by_name(&u, "Val Venis"), tr = (uint8_t)by_name(&u, "Trish Stratus");
+        uint8_t x2 = (uint8_t)by_name(&u, "X-Pac"), to = (uint8_t)by_name(&u, "Tori");
+        int lv = u_ally_level(&u, v, tr), lx = u_ally_level(&u, x2, to);
+        u.slot = 1;
+        play_one(&u, 0, U_FMT_SINGLE, v, U_NONE, (uint8_t)by_name(&u, "Rikishi"), U_NONE,
+                 U_NONE, U_NONE, 0);
+        memset(&e, 0, sizeof e);
+        e.kind = U_SHOW_WEEKLY;
+        u.slot = 0;                          /* the week turns */
+        u_apply_show(&u, &e);
+        CHECK(u_ally_level(&u, v, tr) == lv);
+        CHECK(u_ally_level(&u, x2, to) == lx - 2);
+    }
+    CHECK(ally_of(&u, a, c) == -1);
+}
+
+/* New teams: from high allies; splits: low teams, never the champions */
+static void test_teams_form_and_split(void)
+{
+    Universe u, v;
+    UShow s;
+    uint8_t a, b, buf[U_SAVE_SIZE];
+    int i, k, t0, formed = -1, split = -1, debut = 0;
+    roster_universe(&u, 22);
+    a = (uint8_t)by_name(&u, "Chris Benoit");
+    b = (uint8_t)by_name(&u, "Dean Malenko");
+    t0 = u.n_teams;
+    for (k = 0; k < 60 && formed < 0; k++) {    /* 30% a week */
+        u_add_ally(&u, a, b, 95);
+        for (i = 0; i < U_MAX_RIVALRIES; i++)
+            if ((u.r[i].a == a && u.r[i].b == b) || (u.r[i].a == b && u.r[i].b == a))
+                u.r[i].intensity = 0;
+        do {
+            u_book_show(&u, &s);
+            u_sim_show(&u, &s);
+            u_apply_show(&u, &s);
+            if (s.team_formed != U_NONE) formed = s.team_formed;
+        } while (u.slot != 0 && formed < 0);
+    }
+    CHECK(formed >= 0);
+    if (formed < 0) return;
+    CHECK(formed == t0 || u.tm[formed].split == 0);
+    CHECK((u.tm[formed].a == a && u.tm[formed].b == b) || (u.tm[formed].a == b && u.tm[formed].b == a));
+    CHECK(!strcmp(u.tm[formed].name, "Benoit&Malenko") ||
+          !strcmp(u.tm[formed].name, "Dean Malenko&Chris Benoit") ||
+          strlen(u.tm[formed].name) < U_NAME_LEN);
+    CHECK(u.tm[formed].debut && u.tm[formed].low_weeks < 0);
+    {   /* at the bottom of the tag ranking, then its debut tag match */
+        uint8_t r[U_MAX_TEAMS];
+        int n = u_team_rankings(&u, U_NONE, r, U_MAX_TEAMS);
+        CHECK(r[n - 1] == formed);
+        u_book_show(&u, &s);
+        for (i = 0; i < s.count; i++)
+            if (s.m[i].format == U_FMT_TAG && (s.m[i].team[0] == formed || s.m[i].team[1] == formed))
+                debut = 1;
+        CHECK(debut);
+        u_sim_show(&u, &s);
+        u_apply_show(&u, &s);
+        CHECK(!u.tm[formed].debut);
+    }
+    /* saved */
+    CHECK(u_save(&u, buf, sizeof buf) == U_SAVE_SIZE && u_load(&v, buf, sizeof buf) == 0);
+    CHECK(!strcmp(v.tm[formed].name, u.tm[formed].name) && v.tm[formed].last_show == u.tm[formed].last_show);
+    /* a team stuck low on a losing streak splits; the tag champions never */
+    for (k = 0; k < 400 && split < 0; k++) {
+        for (i = 0; i < u.n_teams; i++) {
+            u.tm[i].low_weeks = 50;
+            u.tm[i].streak = -5;
+            u.tm[i].points = (uint16_t)(i == formed ? 0 : 100 + i);
+        }
+        do {
+            u_book_show(&u, &s);
+            u_sim_show(&u, &s);
+            u_apply_show(&u, &s);
+            if (s.team_split != U_NONE) split = s.team_split;
+        } while (u.slot != 0 && split < 0);
+    }
+    CHECK(split >= 0);
+    if (split < 0) return;
+    CHECK(u.tm[split].split && !is_tag_champ(&u, (uint8_t)split));
+    CHECK(u_ally_level(&u, u.tm[split].a, u.tm[split].b) == 0);    /* reset */
+    {
+        uint8_t r[U_MAX_TEAMS];
+        int n = u_team_rankings(&u, U_NONE, r, U_MAX_TEAMS);
+        for (i = 0; i < n; i++) CHECK(r[i] != split);
+        CHECK(n >= 6);
+    }
+    /* never below 6 teams, champions never split */
+    for (k = 0; k < 300; k++) {
+        uint8_t r[U_MAX_TEAMS];
+        for (i = 0; i < u.n_teams; i++) { u.tm[i].low_weeks = 50; u.tm[i].streak = -5; }
+        run_week(&u);
+        CHECK(u_team_rankings(&u, U_NONE, r, U_MAX_TEAMS) >= 6);
+        for (i = 0; i < u.n_titles; i++)
+            if (u.t[i].kind == U_TITLE_TAG && u_title_holder(&u, (uint8_t)i) != U_NONE)
+                CHECK(!u.tm[u_title_holder(&u, (uint8_t)i)].split);
+    }
+}
+
 /* Title contenders: the top 5 per belt (plan step 6) */
 static void test_contenders(void)
 {
@@ -1151,6 +1360,8 @@ int main(void)
     test_ranking_points();
     test_contenders();
     test_title_pictures();
+    test_allies_over_time();
+    test_teams_form_and_split();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;
