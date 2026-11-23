@@ -45,6 +45,7 @@ typedef struct {
     uint8_t game_attire[4]; /* their attires */
     uint8_t method;         /* U_WIN_* read from the game */
     uint8_t falls[4];       /* Ironman: falls per slot */
+    uint8_t run_in;         /* a wrestler who ran in during the match (game number), 0 = none */
 } UGameResult;
 /* Called again after a rematch, replacing the result. */
 void us_match_result(const UGameResult *r);

@@ -614,3 +614,17 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   0-12 male, 13-21 female - true for every built-in character too.
 - The edit wrestlers' 0xD8-byte blocks (*(u32 *)0x80047F3C) hold a template
   until used; their ALLY/ENEMY is not rewritten by Universe (built-ins only).
+
+## Run-ins in the game (2026-11-23)
+- In a singles match the four slots (wrestler id u16 at 0x8015AF50 +
+  0x358 * slot) are: 0-1 the wrestlers, 2 the companion at ringside (from
+  the start of the match; here Trish Stratus with Val Venis, "Accompanied
+  by" as Universe wrote it), 3 empty (0xFFFF) until a run-in: it then holds
+  the wrestler who ran in (Hardcore Holly, Val Venis's Rival 2 in the data
+  Universe wrote, ran in after about 3 minutes of match time). So the
+  game's interference follows the rivals / companion written before the
+  match. Slots 4-5 are something else (0000 / 015B).
+- The director takes a snapshot of the extra slots when the match begins
+  and records the first wrestler who appears there later (not a companion
+  it wrote) as the match's run-in (UGameResult.run_in); Universe counts it
+  like a simulated run-in.

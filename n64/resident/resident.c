@@ -155,6 +155,7 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 static uint8_t dstate, dwatch, seen_result, dresults, dlast_screen;
 static USetup  dsetup;                 /* the match being staged */
 static UGameResult dlast;              /* its latest result values, read while it is on screen */
+static uint8_t drun_empty[4];          /* an extra slot was seen empty since the match began */
 static uint16_t dlast_id[4];           /* who held each place then (Royal Rumble: entrants rotate) */
 static uint8_t dprev_result[4];        /* Royal Rumble: last frame's result bytes */
 static uint8_t dlast_valid, dseen_zero;
@@ -492,6 +493,7 @@ static void director_start(int watch)
     keep_rules();
     dlast_valid = 0;
     dseen_zero = 0;
+    dlast.run_in = 0;
     dprev_result[0] = dprev_result[1] = dprev_result[2] = dprev_result[3] = 0;
     dlast_screen = 0xFF;
     dfilled = 0;
@@ -692,8 +694,31 @@ static void director_tick(void)
                 if (dlast.result[i]) zero = 0;
                 if (!dseen_zero || f > dlast.falls[i]) dlast.falls[i] = f;
             }
+            if (zero && !dseen_zero) {          /* the match begins */
+                for (i = 0; i < 4; i++) drun_empty[i] = 0;
+                dlast.run_in = 0;
+            }
             if (zero) dseen_zero = 1;
             dlast_valid = 1;
+        }
+        /* A run-in: a slot beyond the match's own wrestlers that goes from
+         * empty (0xFFFF) to a wrestler once the match has begun (slot 2 of
+         * a singles match holds the companion at ringside throughout, slot 3
+         * is set up while the match loads, then empty until a run-in) - not
+         * a companion the Universe wrote for this match */
+        if (screen == SCREEN_MATCH && dseen_zero && !dlast.run_in && !dsetup.rumble_n &&
+            !dsetup.tag) {
+            for (i = dsetup.n_slots; i < 4 && !dlast.run_in; i++) {
+                uint16_t id = RAM16(SLOT_ID(i));
+                uint8_t num;
+                int s2, companion = 0;
+                if (id == 0xFFFFu) { drun_empty[i] = 1; continue; }
+                if (id == 0 || !drun_empty[i]) continue;
+                num = game_number(id);
+                for (s2 = 0; s2 < 4; s2++)
+                    if ((dsetup.rel_set & (1u << s2)) && dsetup.rel[s2][3] == num) companion = 1;
+                if (num && !companion) dlast.run_in = num;
+            }
         }
         /* The result is recorded when the result screen comes up: the
          * winner (4) from the match, how it ended from the finish flags

@@ -486,7 +486,13 @@ static void match_rules(const UMatch *m, uint8_t *r)
 
 /* Rankings pages: men, women, tag teams, one per belt, injuries, the
  * Universe (its save, New Universe) */
-static int rk_pages(void) { return 3 + U.n_titles + 2; }
+/* pages: 0 men, 1 women, 2 tag teams, the belts, then feuds, allies and
+ * teams, title history, injuries, the Universe */
+#define P_FEUDS    (3 + U.n_titles)
+#define P_ALLIES   (4 + U.n_titles)
+#define P_HISTORY  (5 + U.n_titles)
+#define P_INJURIES (6 + U.n_titles)
+static int rk_pages(void) { return 8 + U.n_titles; }
 static int rk_universe_page(void) { return rk_page == rk_pages() - 1; }
 static int rk_lines(void);
 
@@ -700,6 +706,41 @@ static int in_match(const UMatch *m, uint8_t id)
  * universe replaces the card's one, and the guest referee likewise), the
  * finish, and Ironman falls. A rematch calls this again and replaces the
  * result. */
+/* A run-in the game staged (plan step 7): an ally of someone in the match
+ * helped him; an enemy of one side helped the other. Recorded like a
+ * simulated run-in (u_apply_show: ally level, a feud with the other side). */
+static int feuding(uint8_t a, uint8_t b)
+{
+    int i;
+    for (i = 0; i < U_MAX_RIVALRIES; i++)
+        if (U.r[i].intensity && ((U.r[i].a == a && U.r[i].b == b) || (U.r[i].a == b && U.r[i].b == a)))
+            return 1;
+    return 0;
+}
+
+static void note_run_in(UMatch *m, const UGameResult *r)
+{
+    uint8_t x, helped = U_NONE;
+    int s, k, sides = u_match_sides(m);
+    if (!r->run_in || !m->done || m->format == U_FMT_TAG) return;
+    x = universe_wrestler(r->run_in, 0);
+    if (x == U_NONE || in_match(m, x) || x == m->referee) return;
+    for (s = 0; s < sides && helped == U_NONE; s++)           /* an ally's save */
+        for (k = 0; k < 2; k++)
+            if (m->side[s][k] != U_NONE && u_ally_level(&U, x, m->side[s][k]) > 0)
+                helped = m->side[s][k];
+    for (s = 0; s < sides && helped == U_NONE; s++)           /* an enemy's attack */
+        for (k = 0; k < 2; k++)
+            if (m->side[s][k] != U_NONE && feuding(x, m->side[s][k])) {
+                int o;
+                for (o = 0; o < sides && helped == U_NONE; o++)
+                    if (o != s) helped = m->side[o][0];
+            }
+    if (helped == U_NONE) return;
+    m->run_in = x;
+    m->run_in_for = helped;
+}
+
 void us_match_result(const UGameResult *r)
 {
     UMatch *m;
@@ -749,10 +790,12 @@ void us_match_result(const UGameResult *r)
         /* the game's verdict decides (the falls are for the card) */
         m->winner = win < 0 ? U_NONE : (uint8_t)win;
         m->method = win < 0 ? U_WIN_DRAW : U_WIN_FALLS;
+        note_run_in(m, r);
         return;
     }
     if (win < 0) {
         if (r->method == U_WIN_DRAW) u_set_draw(m);
+        note_run_in(m, r);
         return;
     }
     method = r->method;
@@ -760,6 +803,7 @@ void us_match_result(const UGameResult *r)
         method = m->stip == U_STIP_LADDER || m->stip == U_STIP_CAGE ? U_WIN_SPECIAL
                                                                      : U_WIN_PINFALL;
     u_set_result(m, (uint8_t)win, method);
+    note_run_in(m, r);
     u_show_update(&SHOW);                 /* a tournament winner moves on */
 }
 
@@ -858,7 +902,10 @@ static const char *rk_title(void)
     if (rk_page == 1) return "Women";
     if (rk_page == 2) return "Tag Teams";
     if (rk_page < 3 + U.n_titles) return U.t[rk_page - 3].name;
-    if (rk_page == 3 + U.n_titles) return "Injuries";
+    if (rk_page == P_FEUDS) return "Feuds";
+    if (rk_page == P_ALLIES) return "Allies and Teams";
+    if (rk_page == P_HISTORY) return "Title History";
+    if (rk_page == P_INJURIES) return "Injuries";
     return "Universe";
 }
 
@@ -922,7 +969,83 @@ static int rk_lines(void)
             if (held) { s_add(&s, " - "); s_add(&s, held); }
         }
         if (!k) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No contenders"); }
-    } else if (rk_page == 3 + U.n_titles) {               /* injuries */
+    } else if (rk_page == P_FEUDS) {                      /* feuds, hottest first */
+        uint8_t done[U_MAX_RIVALRIES];
+        for (i = 0; i < U_MAX_RIVALRIES; i++) done[i] = 0;
+        for (;;) {
+            int best = -1;
+            for (i = 0; i < U_MAX_RIVALRIES; i++)
+                if (U.r[i].intensity && !done[i] && (best < 0 || U.r[i].intensity > U.r[best].intensity))
+                    best = i;
+            if (best < 0 || n >= RK_MAX) break;
+            done[best] = 1;
+            s_init(&s, rk_text[n++], LINE_LEN);
+            s_add(&s, U.w[U.r[best].a].name);
+            s_add(&s, " vs ");
+            s_add(&s, U.w[U.r[best].b].name);
+            s_add(&s, " - ");
+            s_num(&s, U.r[best].intensity);
+        }
+        if (!n) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No feuds"); }
+    } else if (rk_page == P_ALLIES) {                     /* allies from 50, closest first */
+        uint8_t done[U_MAX_ALLIES];
+        for (i = 0; i < U_MAX_ALLIES; i++) done[i] = 0;
+        for (;;) {
+            int best = -1, t;
+            const UAlly *x;
+            for (i = 0; i < U_MAX_ALLIES; i++)
+                if (U.al[i].level >= U_ALLY_COMPANION && !done[i] &&
+                    (best < 0 || U.al[i].level > U.al[best].level))
+                    best = i;
+            if (best < 0 || n >= RK_MAX) break;
+            done[best] = 1;
+            x = &U.al[best];
+            s_init(&s, rk_text[n++], LINE_LEN);
+            s_add(&s, U.w[x->a].name);
+            s_add(&s, " & ");
+            s_add(&s, U.w[x->b].name);
+            s_add(&s, " - ");
+            s_num(&s, x->level);
+            for (t = 0; t < U.n_teams; t++)
+                if (!U.tm[t].split && ((U.tm[t].a == x->a && U.tm[t].b == x->b) ||
+                                       (U.tm[t].a == x->b && U.tm[t].b == x->a)))
+                    s_add(&s, " - team");
+        }
+        if (!n) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No allies"); }
+    } else if (rk_page == P_HISTORY) {                    /* each belt, latest reigns */
+        int t2;
+        for (t2 = 0; t2 < U.n_titles && n < RK_MAX; t2++) {
+            const UTitle *ti = &U.t[t2];
+            int r;
+            s_init(&s, rk_text[n++], LINE_LEN);
+            s_add(&s, ti->name);
+            s_add(&s, ":");
+            if (ti->vacant && n < RK_MAX) {
+                s_init(&s, rk_text[n++], LINE_LEN);
+                s_add(&s, "Vacant");
+            }
+            for (r = ti->reign_count; r > 0 && ti->reign_count - r < 5 &&
+                 ti->reign_count - r < U_MAX_REIGNS && n < RK_MAX; r--) {
+                const UReign *rg = &ti->history[(r - 1) % U_MAX_REIGNS];
+                s_init(&s, rk_text[n++], LINE_LEN);
+                s_add(&s, ti->kind == U_TITLE_TAG ? U.tm[rg->holder].name : U.w[rg->holder].name);
+                if (rg->lost_week == U_OPEN_WEEK && !ti->vacant) {
+                    s_add(&s, " - since week ");
+                    s_num(&s, rg->won_week);
+                } else {
+                    s_add(&s, " - weeks ");
+                    s_num(&s, rg->won_week);
+                    s_add(&s, "-");
+                    s_num(&s, rg->lost_week == U_OPEN_WEEK ? U.week : rg->lost_week);
+                }
+                if (rg->defenses) {
+                    s_add(&s, ", ");
+                    s_num(&s, rg->defenses);
+                    s_add(&s, rg->defenses == 1 ? " defence" : " defences");
+                }
+            }
+        }
+    } else if (rk_page == P_INJURIES) {                   /* injuries */
         k = u_injuries(&U, ids, U_MAX_WRESTLERS);
         for (i = 0; i < k && n < RK_MAX; i++) {
             const UWrestler *w = &U.w[ids[i]];
