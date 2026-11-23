@@ -598,3 +598,19 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   0x8003BFFF, kept by a stub at 0x80005E78; never used by the game), the
   Rumble Pak code (osMotorInit 0x80039A74) and Transfer Pak code
   (0x80005000-0x80005530).
+
+## Created wrestlers (2026-11-23)
+- Smackdown Mall > Superstar Options > Create a Superstar > Save Data
+  Select (Data 1-18) > the editor (tabs Profile/Music, Appearance, Moves,
+  Fighting Style, Parameter, Ally/Enemy); START = Decision, then "save this
+  superstar?" (cursor on No). Appearance > Body > A opens the body list
+  with a Male/Female selector (D-pad right asks "change superstar gender?";
+  the editor resets).
+- Data n is game number 64 + n (65-82), picked from the EDIT 1 / EDIT 2
+  Superstar Select pages (ids 0x0A01+). Its profile is in the same array
+  (0x8031A398 + 0x138 * (n - 1)): an empty slot has an empty name (the
+  default name is "??????"); +0x48 u16 weight - 100.
+- Gender: profile +0x31 (per attire, 0x4E apart) & 0x1F is the body type:
+  0-12 male, 13-21 female - true for every built-in character too.
+- The edit wrestlers' 0xD8-byte blocks (*(u32 *)0x80047F3C) hold a template
+  until used; their ALLY/ENEMY is not rewritten by Universe (built-ins only).

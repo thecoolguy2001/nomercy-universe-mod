@@ -735,6 +735,13 @@ int u_set_brand(Universe *u, uint8_t id, uint8_t brand)
     return 0;
 }
 
+int u_rename(Universe *u, uint8_t id, const char *name)
+{
+    if (id >= u->n_wrestlers || !name || !name[0]) return -1;
+    u_set_name(u->w[id].name, name);
+    return 0;
+}
+
 int u_set_align(Universe *u, uint8_t id, uint8_t align)
 {
     if (id >= u->n_wrestlers) return -1;

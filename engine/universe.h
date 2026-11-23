@@ -16,7 +16,7 @@
 
 #include <stdint.h>
 
-#define U_MAX_WRESTLERS  80  /* the whole game roster fits (plan step 5) */
+#define U_MAX_WRESTLERS  84  /* the game roster and its 18 created wrestlers */
 #define U_MAX_TEAMS      16
 #define U_MAX_TITLES     8   /* the game's 7 belts */
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
@@ -235,7 +235,7 @@ typedef struct {
     UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 11     /* bumped when the layout changes */
+#define U_SAVE_VERSION 12     /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
 #define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 25)
@@ -276,6 +276,7 @@ uint8_t u_companion(const Universe *u, const UMatch *m, uint8_t id);
 int     u_top_rivals(const Universe *u, uint8_t id, uint8_t *out, int max);
 int     u_set_brand(Universe *u, uint8_t id, uint8_t brand);   /* titles follow */
 int     u_set_align(Universe *u, uint8_t id, uint8_t align);
+int     u_rename(Universe *u, uint8_t id, const char *name);
 int     u_set_overall(Universe *u, uint8_t id, uint8_t overall);  /* (and its base) */
 /* Ability changes over time: every 4 weeks a wrestler gains 1 when his
  * wins over better-rated opponents outnumber his losses to worse-rated

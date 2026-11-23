@@ -181,12 +181,75 @@ static void force_stip(void)
 /* Wrestlers the save hasn't unlocked yet (hidden ones) are left out of
  * booking until it has; Royal Rumble fill-ins come in through the entry
  * list and need no unlocking. */
+/* Created wrestlers (Smackdown Mall, game numbers 65-82) join the
+ * universe as soon as they exist: named in the profile (0x8031A398 +
+ * 0x138 * (n - 1): +0 name, +0x31 body type, 13 and up female, +0x48 u16
+ * weight - 100), face, ability 72. A renamed one keeps his record; a
+ * deleted one leaves (his titles vacated). */
+#define CAW_FIRST    65
+#define CAW_LAST     82
+#define PROFILE(n)   (0x8031A398u + 0x138u * ((unsigned)(n) - 1u))
+#define CAW_ABILITY  72
+
+static int caw_name(uint8_t n, char *out)   /* title case; 0 = empty slot */
+{
+    const volatile char *src = (const volatile char *)PROFILE(n);
+    int i, start = 1;
+    for (i = 0; i < U_NAME_LEN - 1 && src[i]; i++) {
+        char c = src[i];
+        if (c >= 'A' && c <= 'Z' && !start) c = (char)(c - 'A' + 'a');
+        start = c == ' ' || c == '-' || c == '.';
+        out[i] = c;
+    }
+    out[i] = 0;
+    return i > 0;
+}
+
+static int same_name(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static int sync_created(void)
+{
+    char name[U_NAME_LEN];
+    int changed = 0, i;
+    uint8_t n;
+    if (*(volatile uint32_t *)PROFILE(1) != 0x54484520u) return 0;   /* "THE " (Rock): loaded */
+    for (n = CAW_FIRST; n <= CAW_LAST; n++) {
+        int id = -1, have = caw_name(n, name);
+        for (i = 0; i < U.n_wrestlers; i++)
+            if (U.w[i].game_slot == n) id = i;
+        if (have) {
+            uint8_t body = *(volatile uint8_t *)(PROFILE(n) + 0x31) & 0x1F;
+            uint16_t wt = *(volatile uint16_t *)(PROFILE(n) + 0x48);
+            uint8_t gender = body >= 13 ? U_FEMALE : U_MALE;
+            if (id < 0) {
+                id = u_add_wrestler(&U, name, n, U_BRAND_RAW, U_FACE, CAW_ABILITY);
+                if (id < 0) continue;                 /* (roster full) */
+                changed = 1;
+            } else if (!same_name(U.w[id].name, name)) {
+                u_rename(&U, (uint8_t)id, name);
+                changed = 1;
+            }
+            if (U.w[id].gender != gender || !U.w[id].active) changed = 1;
+            u_set_game_details(&U, (uint8_t)id, 0, gender, wt < 500 ? (uint16_t)(wt + 100) : 0);
+            if (!U.w[id].active) u_set_active(&U, (uint8_t)id, 1);
+        } else if (id >= 0 && U.w[id].active) {
+            u_set_active(&U, (uint8_t)id, 0);         /* deleted in the game */
+            changed = 1;
+        }
+    }
+    return changed;
+}
+
 static void refresh_unlocks(void)
 {
     int i;
     for (i = 0; i < U.n_wrestlers; i++) {
         int can;
-        if (U.w[i].role != U_ROLE_REGULAR) continue;
+        if (U.w[i].role != U_ROLE_REGULAR || U.w[i].game_slot >= CAW_FIRST) continue;
         can = game_pickable(U.w[i].game_slot);
         if (!can && U.w[i].active) u_set_active(&U, (uint8_t)i, 0);
         else if (can && !U.w[i].active) u_set_active(&U, (uint8_t)i, 1);
@@ -266,6 +329,7 @@ void us_enter(uint32_t seed)
         if (!load_saved()) new_universe(seed);
         started = 1;
     }
+    if (sync_created()) dirty = 1;
     if (!show_ready) refresh_unlocks();
     if (!show_ready) {
         u_book_show(&U, &SHOW);
