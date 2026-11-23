@@ -628,3 +628,19 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   and records the first wrestler who appears there later (not a companion
   it wrote) as the match's run-in (UGameResult.run_in); Universe counts it
   like a simulated run-in.
+
+## Test pass (2026-11-23/24)
+- Run-ins: a watched singles match (Val Venis vs Rikishi) had Hardcore
+  Holly run in (slot 3, Val's written rival); with that slot change
+  reproduced, the results say "Run-in: Hardcore Holly helps Rikishi".
+  (Run-ins are random: a second watch of the same match had none.)
+- Makeshift tag teams (Survivor Series style, no team ids): The Rock & Mr.
+  Ass vs D'Lo Brown & British Bulldog loads and plays (watched to 8:54 of
+  match time; its result not reached in the test window).
+- Royal Rumble with fill-ins / locked wrestlers written into the entry
+  list: Chyna (entrant 5) and Mae Young (number 59, entrant 5) both enter
+  and the Rumble goes on (no freeze; watched past 5:40). Entrants come
+  every few minutes, so a full 40-man Rumble was not watched to the end.
+- Tag Ironman (5-minute limit via the test hooks): ran to time with no
+  falls; recorded as a draw, falls 0-0. Falls added up per side (tag /
+  triple) are still unverified with real falls.
