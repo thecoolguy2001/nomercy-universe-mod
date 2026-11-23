@@ -331,8 +331,10 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   rectangles at 0x8014C268 (16 bytes: x0,y0,s0,t0,x1,y1,s1,t1), tiles 0-2
   = left column top to bottom, 3-5 = right column, each 64x32 stretched to
   72x36 (144x108 picture).
-- The mod stores all 60 tiles (tools/make_arenas.py) at ROM 0x1FD0000; the
-  boot loader DMAs them to 0x80480000; the cover draws the show's arena.
+- The mod stores all 60 tiles (tools/make_arenas.py) at the end of the ROM,
+  0x1FDA800 (moved from 0x1FD0000 on 2026-11-23 so the payload at
+  0x1FB0000 has 0x2A800 bytes); the boot loader DMAs them to 0x80480000;
+  the cover draws the show's arena.
 - Display list buffers 0x80389880 / 0x8038C7F0 (0x2F70 bytes each); menus
   use < 2 KB.
 

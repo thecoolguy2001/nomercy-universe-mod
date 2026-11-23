@@ -1,6 +1,18 @@
 /* No Mercy Universe engine - see universe.h for the design rules. */
 #include "universe.h"
 
+/* Ranking points (notes/universe-plan.md, Rankings) */
+#define U_PTS_START   3     /* a new wrestler / team: 3 x ability */
+#define U_PTS_WIN     20
+#define U_PTS_LOSS    10
+#define U_PTS_GAP     10    /* + 1 per this many points the other side was ahead */
+#define U_PTS_GAP_MAX 20
+#define U_PTS_STREAK  3     /* per win in a row before this one ... */
+#define U_PTS_STREAK_MAX 5  /* ... counting up to this many */
+#define U_PTS_ALONE   10    /* the lone wrestler beating a handicap pair */
+#define U_PTS_RUMBLE  40    /* Royal Rumble winner */
+#define U_PTS_MAX     9999
+
 
 /* ---------- small helpers (no libc) ---------- */
 
@@ -230,6 +242,7 @@ int u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
     w->brand = brand;
     w->align = align ? U_HEEL : U_FACE;
     w->overall = (uint8_t)clamp(overall, 0, 100);
+    w->points = (uint16_t)(U_PTS_START * w->overall);
     w->active = 1;
     return u->n_wrestlers++;
 }
@@ -274,6 +287,13 @@ int u_set_champion(Universe *u, uint8_t title, uint8_t holder)
     return 0;
 }
 
+int u_set_no_world(Universe *u, uint8_t title, uint8_t on)
+{
+    if (title >= u->n_titles) return -1;
+    u->t[title].no_world = on ? 1 : 0;
+    return 0;
+}
+
 int u_set_division(Universe *u, uint8_t title, uint8_t division)
 {
     if (title >= u->n_titles || division > U_DIV_LIGHT) return -1;
@@ -293,6 +313,7 @@ int u_add_team(Universe *u, const char *name, uint8_t a, uint8_t b)
     t->a = a;
     t->b = b;
     t->active = 1;
+    t->points = (uint16_t)(U_PTS_START * (u->w[a].overall + u->w[b].overall) / 2);
     return u->n_teams++;
 }
 
@@ -424,6 +445,18 @@ static int team_on_brand(const Universe *u, uint8_t team, uint8_t brand)
     return brand == U_NONE || u->w[t->a].brand == brand;
 }
 
+/* Ranking order: points, then ability */
+static int rank_key(const UWrestler *w)
+{
+    return (int)w->points * 128 + w->overall;
+}
+
+static int team_key(const Universe *u, uint8_t team)
+{
+    const UTeam *t = &u->tm[team];
+    return (int)t->points * 128 + (u->w[t->a].overall + u->w[t->b].overall) / 2;
+}
+
 /* Active regular wrestlers of a brand (U_NONE = all), best first. */
 int u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max)
 {
@@ -435,8 +468,8 @@ int u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max)
     }
     for (i = 1; i < n; i++) { /* insertion sort, stable by id */
         uint8_t id = out[i];
-        int s = u_score(&u->w[id]);
-        for (j = i; j > 0 && u_score(&u->w[out[j - 1]]) < s; j--)
+        int s = rank_key(&u->w[id]);
+        for (j = i; j > 0 && rank_key(&u->w[out[j - 1]]) < s; j--)
             out[j] = out[j - 1];
         out[j] = id;
     }
@@ -469,8 +502,51 @@ int u_team_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max)
         if (team_on_brand(u, (uint8_t)i, brand)) out[n++] = (uint8_t)i;
     for (i = 1; i < n; i++) {
         uint8_t id = out[i];
-        int s = u_team_score(u, id);
-        for (j = i; j > 0 && u_team_score(u, out[j - 1]) < s; j--)
+        int s = team_key(u, id);
+        for (j = i; j > 0 && team_key(u, out[j - 1]) < s; j--)
+            out[j] = out[j - 1];
+        out[j] = id;
+    }
+    return n;
+}
+
+int u_contenders(const Universe *u, uint8_t title, uint8_t *out, int max)
+{
+    uint8_t all[U_MAX_WRESTLERS];
+    const UTitle *t;
+    uint8_t h, world;
+    int n, i, k = 0;
+    if (title >= u->n_titles) return 0;
+    t = &u->t[title];
+    h = u_title_holder(u, title);
+    if (t->kind == U_TITLE_TAG) {
+        n = u_team_rankings(u, U_NONE, all, U_MAX_TEAMS);
+        for (i = 0; i < n && k < max; i++) {
+            const UTeam *tm = &u->tm[all[i]];
+            if (all[i] != h && !u->w[tm->a].injured_weeks && !u->w[tm->b].injured_weeks)
+                out[k++] = all[i];
+        }
+        return k;
+    }
+    world = u->n_titles && u->t[0].kind == U_TITLE_SINGLES ? u_title_holder(u, 0) : U_NONE;
+    n = u_division_rankings(u, t->division, all, U_MAX_WRESTLERS);
+    for (i = 0; i < n && k < max; i++) {
+        if (all[i] == h || u->w[all[i]].injured_weeks) continue;
+        if (t->no_world && all[i] == world) continue;
+        out[k++] = all[i];
+    }
+    return k;
+}
+
+int u_injuries(const Universe *u, uint8_t *out, int max)
+{
+    int n = 0, i, j;
+    for (i = 0; i < u->n_wrestlers && n < max; i++)
+        if (u->w[i].injured_weeks && u->w[i].active && u->w[i].role == U_ROLE_REGULAR)
+            out[n++] = (uint8_t)i;
+    for (i = 1; i < n; i++) {
+        uint8_t id = out[i];
+        for (j = i; j > 0 && u->w[out[j - 1]].injured_weeks < u->w[id].injured_weeks; j--)
             out[j] = out[j - 1];
         out[j] = id;
     }
@@ -676,6 +752,35 @@ static int resting_pair(const Booker *b, uint8_t x, uint8_t y)
     return ri >= 0 && rested(b, &b->u->r[ri]);
 }
 
+/* A regular match from a ranking: the free wrestler who has waited longest
+ * for a match, against the free wrestler closest to him in the ranking
+ * (opposite alignment preferred, within 4 places), never an ally or a feud
+ * resting this show. 1 = booked, 0 = he was left out (only allies or
+ * resting rivals free), -1 = nobody free. */
+static int book_regular(Booker *b, const uint8_t *rank, int n)
+{
+    const Universe *u = b->u;
+    int i, a = -1, d, k, pass, pick = -1;
+    for (i = 0; i < n; i++)
+        if (!b->used[rank[i]] && (a < 0 || u->w[rank[i]].last_show < u->w[rank[a]].last_show))
+            a = i;
+    if (a < 0) return -1;
+    for (pass = 0; pass < 2 && pick < 0; pass++)
+        for (d = 1; d < n && pick < 0 && (pass || d <= 4); d++)
+            for (k = 0; k < 2 && pick < 0; k++) {
+                int j = k ? a - d : a + d;
+                if (j < 0 || j >= n || b->used[rank[j]]) continue;
+                if (!pass && u->w[rank[j]].align == u->w[rank[a]].align) continue;
+                if (allies(u, rank[a], rank[j]) || resting_pair(b, rank[a], rank[j])) continue;
+                pick = j;
+            }
+    if (pick < 0) {
+        b->used[rank[a]] = 1;
+        return 0;
+    }
+    return book_singles(b, rank[a], rank[pick], U_NONE, U_NONE, U_STIP_NORMAL) ? 1 : -1;
+}
+
 /* Hottest rivalry whose two members are both still unbooked. If id is not
  * U_NONE, the rivalry must involve that wrestler. */
 static int best_open_rivalry(const Booker *b, uint8_t id)
@@ -692,20 +797,6 @@ static int best_open_rivalry(const Booker *b, uint8_t id)
         if (best < 0 || r->intensity > u->r[best].intensity) best = i;
     }
     return best;
-}
-
-/* Best-ranked available non-champion not saved for their own rivalry,
- * falling back to anyone available. */
-static int pick_contender(const Booker *b, const uint8_t *rank, int n)
-{
-    int j;
-    for (j = 0; j < n; j++)
-        if (!b->used[rank[j]] && !is_singles_champion(b->u, rank[j]) &&
-            best_open_rivalry(b, rank[j]) < 0)
-            return rank[j];
-    for (j = 0; j < n; j++)
-        if (!b->used[rank[j]] && !is_singles_champion(b->u, rank[j])) return rank[j];
-    return -1;
 }
 
 /* Royal Rumble entrants: every healthy regular except the World champion
@@ -874,11 +965,13 @@ static int title_due(Universe *u, uint8_t t, int ppv)
     return ppv || (int)u_rand(u, 100) < chance;
 }
 
-/* Best-ranked free wrestler of a division who isn't a singles champion,
- * preferring one not saved for a feud of his own */
-static int pick_eligible(const Booker *b, const uint8_t *rank, int n)
+/* The best-ranked free contender who doesn't hold a singles title */
+static int free_contender(const Booker *b, const uint8_t *con, int n)
 {
-    return pick_contender(b, rank, n);
+    int i;
+    for (i = 0; i < n; i++)
+        if (!b->used[con[i]] && !is_singles_champion(b->u, con[i])) return con[i];
+    return -1;
 }
 
 /* How big a match is: the card runs from the least to the most important
@@ -945,9 +1038,9 @@ static void one_persona(Booker *b)
 void u_book_show(Universe *u, UShow *s)
 {
     Booker b;
-    uint8_t men[U_MAX_WRESTLERS], women[U_MAX_WRESTLERS], light[U_MAX_WRESTLERS];
+    uint8_t men[U_MAX_WRESTLERS], women[U_MAX_WRESTLERS];
     uint8_t trank[U_MAX_TEAMS];
-    int nm, nw, nl, nt, i, j, t, ppv, women_booked = 0;
+    int nm, nw, nt, i, j, t, ppv, women_booked = 0;
 
     u_zero(s, sizeof *s);
     s->week = u->week;
@@ -964,7 +1057,6 @@ void u_book_show(Universe *u, UShow *s)
     one_persona(&b);
     nm = u_division_rankings(u, U_DIV_MEN, men, U_MAX_WRESTLERS);
     nw = u_division_rankings(u, U_DIV_WOMEN, women, U_MAX_WRESTLERS);
-    nl = u_division_rankings(u, U_DIV_LIGHT, light, U_MAX_WRESTLERS);
     nt = u_team_rankings(u, U_NONE, trank, U_MAX_TEAMS);
 
     /* The Royal Rumble PPV's main event (booked first: the card is
@@ -981,16 +1073,16 @@ void u_book_show(Universe *u, UShow *s)
     for (t = 0; t < u->n_titles; t++) {
         UTitle *ti = &u->t[t];
         uint8_t h = u_title_holder(u, (uint8_t)t);
-        const uint8_t *rank = ti->division == U_DIV_WOMEN ? women
-                            : ti->division == U_DIV_LIGHT ? light : men;
-        int n = ti->division == U_DIV_WOMEN ? nw : ti->division == U_DIV_LIGHT ? nl : nm;
+        uint8_t con[U_MAX_WRESTLERS];                     /* the title's contenders */
+        int nc;
         uint8_t stip = t == 4 ? U_STIP_NODQ : U_STIP_NORMAL;   /* Hardcore: No DQ */
         if (!ti->active || ti->kind != U_TITLE_SINGLES) continue;
-        if (h == U_NONE) {
-            int x = pick_eligible(&b, rank, n), y;
+        nc = u_contenders(u, (uint8_t)t, con, U_MAX_WRESTLERS);
+        if (h == U_NONE) {                                /* vacant: #1 vs #2 */
+            int x = free_contender(&b, con, nc), y;
             if (x < 0) continue;
             b.used[x] = 1;
-            y = pick_eligible(&b, rank, n);
+            y = free_contender(&b, con, nc);
             b.used[x] = 0;
             if (y >= 0) book_singles(&b, (uint8_t)x, (uint8_t)y, (uint8_t)t, U_NONE,
                                      ppv ? U_STIP_LADDER : stip);
@@ -1008,15 +1100,16 @@ void u_book_show(Universe *u, UShow *s)
         }
         if (!title_due(u, (uint8_t)t, ppv)) continue;  /* (his feud may still be booked) */
         {
-            /* the champion's hottest feud with someone who may challenge,
-             * unless the rival holds a singles title too */
+            /* the champion's hottest feud with a top-5 contender (unless
+             * the rival holds a singles title too), else the #1 contender */
             int ri = -1, k;
             for (k = 0; k < U_MAX_RIVALRIES; k++) {
                 const URivalry *r = &u->r[k];
                 uint8_t opp = r->a == h ? r->b : r->a;
+                int top = 0, c;
+                for (c = 0; c < nc && c < U_CONTENDERS; c++) top |= con[c] == opp;
                 if (!r->intensity || (r->a != h && r->b != h) || b.used[opp] ||
-                    is_singles_champion(u, opp) || !u_eligible(u, opp, ti->division) ||
-                    rested(&b, r))
+                    is_singles_champion(u, opp) || !top || rested(&b, r))
                     continue;
                 if (ri < 0 || r->intensity > u->r[ri].intensity) ri = k;
             }
@@ -1027,7 +1120,7 @@ void u_book_show(Universe *u, UShow *s)
                 maybe_referee(&b, book_singles(&b, h, opp, (uint8_t)t, (uint8_t)ri,
                                                fs == U_STIP_NORMAL ? stip : fs), men, nm);
             } else {
-                int c = pick_eligible(&b, rank, n);
+                int c = free_contender(&b, con, nc);
                 if (c < 0) continue;
                 book_singles(&b, h, (uint8_t)c, (uint8_t)t, U_NONE, stip);
             }
@@ -1070,20 +1163,8 @@ void u_book_show(Universe *u, UShow *s)
     }
 
     /* The women's division: a match on every show */
-    if (!women_booked && s->count < b.max) {
-        int x = -1, y = -1;
-        for (i = 0; i < nw; i++) {
-            if (b.used[women[i]] || (x >= 0 && (allies(u, (uint8_t)x, women[i]) ||
-                                                resting_pair(&b, (uint8_t)x, women[i]))))
-                continue;
-            if (x < 0) x = women[i];
-            else if (u->w[women[i]].align != u->w[x].align || y < 0) {
-                y = women[i];
-                if (u->w[y].align != u->w[x].align) break;
-            }
-        }
-        if (x >= 0 && y >= 0) book_singles(&b, (uint8_t)x, (uint8_t)y, U_NONE, U_NONE, U_STIP_NORMAL);
-    }
+    if (!women_booked && s->count < b.max)
+        while (book_regular(&b, women, nw) == 0) {}
 
     for (i = 0; i < nt && s->count < b.max; i++) {
         if (!team_free(&b, trank[i]) || is_tag_champion(u, trank[i])) continue;
@@ -1115,22 +1196,7 @@ void u_book_show(Universe *u, UShow *s)
         }
     }
 
-    for (i = 0; i < nm && s->count < b.max; i++) {
-        uint8_t a = men[i];
-        int pick = -1;
-        if (b.used[a]) continue;
-        for (j = i + 1; j < nm && j <= i + 4; j++) { /* nearby, opposite alignment */
-            if (!b.used[men[j]] && u->w[men[j]].align != u->w[a].align &&
-                !allies(u, a, men[j]) && !resting_pair(&b, a, men[j])) {
-                pick = j;
-                break;
-            }
-        }
-        for (j = i + 1; pick < 0 && j < nm; j++)
-            if (!b.used[men[j]] && !allies(u, a, men[j]) && !resting_pair(&b, a, men[j])) pick = j;
-        if (pick < 0) continue;     /* (only allies left for him) */
-        book_singles(&b, a, men[pick], U_NONE, U_NONE, U_STIP_NORMAL);
-    }
+    while (s->count < b.max && book_regular(&b, men, nm) >= 0) {}
 
     for (i = 1; i < s->count; i++) {      /* stable: least important first */
         UMatch tmp = s->m[i];
@@ -1398,6 +1464,77 @@ static void apply_draw(Universe *u, UMatch *m, uint8_t *touched)
     }
 }
 
+/* ---- ranking points ---- */
+
+static void score(uint16_t *points, int8_t *streak, int delta, int won)
+{
+    *points = (uint16_t)clamp((int)*points + delta, 0, U_PTS_MAX);
+    if (won) *streak = (int8_t)(*streak > 0 ? clamp(*streak + 1, 1, 100) : 1);
+    else     *streak = (int8_t)(*streak < 0 ? clamp(*streak - 1, -100, -1) : -1);
+}
+
+/* a side's ranking points: the team's, or its wrestlers' average */
+static int side_points(const Universe *u, const UMatch *m, int side)
+{
+    int k, sum = 0, cnt = 0;
+    if (m->format == U_FMT_TAG) return u->tm[m->team[side]].points;
+    for (k = 0; k < 2; k++)
+        if (m->side[side][k] != U_NONE) {
+            sum += u->w[m->side[side][k]].points;
+            cnt++;
+        }
+    return cnt ? sum / cnt : 0;
+}
+
+static int win_points(int gap, int streak, int ppv, int alone)
+{
+    int p = U_PTS_WIN + clamp(gap / U_PTS_GAP, 0, U_PTS_GAP_MAX)
+          + U_PTS_STREAK * clamp(streak, 0, U_PTS_STREAK_MAX) + (alone ? U_PTS_ALONE : 0);
+    return ppv ? 2 * p : p;
+}
+
+/* Winners gain (more against a higher-ranked side, double at a PPV, a
+ * streak bonus), losers pay (more when they were the higher-ranked side).
+ * Tag matches score the teams. */
+static void rank_points(Universe *u, const UShow *s, const UMatch *m, int W)
+{
+    int n = u_match_sides(m), sp[3], L, k, best = -1;
+    int ppv = s->kind == U_SHOW_PPV;
+    int alone = m->format == U_FMT_HANDICAP && W == 0;
+    for (L = 0; L < n; L++) sp[L] = side_points(u, m, L);
+    for (L = 0; L < n; L++)
+        if (L != W && (best < 0 || sp[L] > best)) best = sp[L];
+    for (L = 0; L < n; L++) {
+        int loss = -(U_PTS_LOSS + clamp((sp[L] - sp[W]) / U_PTS_GAP, 0, U_PTS_GAP_MAX));
+        if (m->format == U_FMT_TAG) {
+            UTeam *t = &u->tm[m->team[L]];
+            score(&t->points, &t->streak,
+                  L == W ? win_points(best - sp[W], t->streak, ppv, 0) : loss, L == W);
+            continue;
+        }
+        for (k = 0; k < 2; k++) {
+            UWrestler *w;
+            if (m->side[L][k] == U_NONE) continue;
+            w = &u->w[m->side[L][k]];
+            score(&w->points, &w->streak,
+                  L == W ? win_points(best - sp[W], w->streak, ppv, alone) : loss, L == W);
+        }
+    }
+}
+
+/* Every week points decay by a tenth; injured wrestlers lose another tenth */
+static void decay_points(Universe *u)
+{
+    int i;
+    for (i = 0; i < u->n_wrestlers; i++) {
+        UWrestler *w = &u->w[i];
+        w->points = (uint16_t)(w->points - w->points / 10);
+        if (w->injured_weeks) w->points = (uint16_t)(w->points - w->points / 10);
+    }
+    for (i = 0; i < u->n_teams; i++)
+        u->tm[i].points = (uint16_t)(u->tm[i].points - u->tm[i].points / 10);
+}
+
 /* The Royal Rumble winner earns a World title shot at WrestleMania (a
  * fill-in winner gets the glory but no shot). Nobody else gets a loss. */
 static void apply_rumble(Universe *u, UMatch *m)
@@ -1406,6 +1543,7 @@ static void apply_rumble(Universe *u, UMatch *m)
     if (m->winner >= m->n_entrants) return;
     id = m->entrant[m->winner];
     u->w[id].wins++;
+    score(&u->w[id].points, &u->w[id].streak, U_PTS_RUMBLE, 1);
     add_momentum(&u->w[id], 15);
     if (u->w[id].role == U_ROLE_REGULAR) u->rumble_winner = id;
     if (u_rand(u, 100) < 4) {
@@ -1442,6 +1580,7 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
         if (L != W && (best_loser < 0 || side_score(u, m, L) > side_score(u, m, best_loser)))
             best_loser = L;
     upset = side_score(u, m, W) + 10 < side_score(u, m, best_loser);
+    rank_points(u, s, m, W);
 
     for (L = 0; L < n; L++) {
         for (k = 0; k < 2; k++) {
@@ -1538,12 +1677,23 @@ void u_apply_show(Universe *u, UShow *s)
     int i, wrestlemania = s->kind == U_SHOW_PPV && u_ppv_index(u) == 2;
 
     u_zero(touched, sizeof touched);
-    if (u->slot == 0) /* a new week: injuries heal by one week */
+    if (u->slot == 0) {   /* a new week: points decay, injuries heal by one week */
+        decay_points(u);
         for (i = 0; i < u->n_wrestlers; i++)
             if (u->w[i].injured_weeks) u->w[i].injured_weeks--;
+    }
 
-    for (i = 0; i < s->count; i++)
-        if (s->m[i].done) apply_match(u, s, &s->m[i], touched);
+    for (i = 0; i < s->count; i++) {
+        UMatch *m = &s->m[i];
+        int k;
+        if (!m->done) continue;
+        for (k = 0; k < 6; k++)
+            if (m->side[k / 2][k % 2] != U_NONE)
+                u->w[m->side[k / 2][k % 2]].last_show = (uint16_t)(4u * u->week + u->slot);
+        for (k = 0; m->format == U_FMT_RUMBLE && k < m->n_entrants; k++)
+            u->w[m->entrant[k]].last_show = (uint16_t)(4u * u->week + u->slot);
+        apply_match(u, s, m, touched);
+    }
 
     /* Rivalries that weren't on this show cool off (one roster: every
      * show could have had them) */
@@ -1628,19 +1778,21 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
         w8(&w, x->injured_weeks); w8(&w, x->active); w8(&w, x->role);
         w8(&w, x->gender); w8(&w, x->game_attire); w16(&w, x->weight); w8(&w, x->persona);
         w16(&w, x->wins); w16(&w, x->losses);
+        w16(&w, x->points); w8(&w, (uint8_t)x->streak); w16(&w, x->last_show);
     }
     for (i = 0; i < U_MAX_TEAMS; i++) {
         const UTeam *t = &u->tm[i];
         wname(&w, t->name);
         w8(&w, t->a); w8(&w, t->b); w8(&w, t->active);
         w16(&w, t->wins); w16(&w, t->losses);
+        w16(&w, t->points); w8(&w, (uint8_t)t->streak);
     }
     for (i = 0; i < U_MAX_TITLES; i++) {
         const UTitle *t = &u->t[i];
         wname(&w, t->name);
         w8(&w, t->brand); w8(&w, t->kind); w8(&w, t->active);
         w8(&w, t->vacant); w8(&w, t->reign_count);
-        w8(&w, t->division); w16(&w, t->last_week);
+        w8(&w, t->division); w16(&w, t->last_week); w8(&w, t->no_world);
         for (k = 0; k < U_MAX_REIGNS; k++) {
             const UReign *rg = &t->history[k];
             w8(&w, rg->holder); w8(&w, rg->defenses);
@@ -1704,6 +1856,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         x->injured_weeks = r8(&r); x->active = r8(&r); x->role = r8(&r);
         x->gender = r8(&r); x->game_attire = r8(&r); x->weight = r16(&r); x->persona = r8(&r);
         x->wins = r16(&r); x->losses = r16(&r);
+        x->points = r16(&r); x->streak = (int8_t)r8(&r); x->last_show = r16(&r);
         if (i < nw && (x->brand >= U_BRAND_COUNT || x->role > U_ROLE_FILLIN ||
                        x->gender > U_FEMALE || x->game_attire > 3))
             return load_fail(u, -6);
@@ -1713,6 +1866,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         rname(&r, t->name);
         t->a = r8(&r); t->b = r8(&r); t->active = r8(&r);
         t->wins = r16(&r); t->losses = r16(&r);
+        t->points = r16(&r); t->streak = (int8_t)r8(&r);
         if (i < nteams && (t->a >= nw || t->b >= nw || t->a == t->b))
             return load_fail(u, -6);
     }
@@ -1721,7 +1875,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         rname(&r, t->name);
         t->brand = r8(&r); t->kind = r8(&r); t->active = r8(&r);
         t->vacant = r8(&r); t->reign_count = r8(&r);
-        t->division = r8(&r); t->last_week = r16(&r);
+        t->division = r8(&r); t->last_week = r16(&r); t->no_world = r8(&r);
         if (i < nt && t->division > U_DIV_LIGHT) return load_fail(u, -6);
         for (k = 0; k < U_MAX_REIGNS; k++) {
             UReign *rg = &t->history[k];

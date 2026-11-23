@@ -196,18 +196,18 @@ static const uint8_t RIVAL_WEIGHT[3] = {50, 30, 20};
 
 /* Belts in No Mercy's order (title index = game belt), their division and
  * default champions (late 2000) for a save whose own champions table is
- * empty. Tag titles: the team of that wrestler. */
+ * empty; the World champion can't challenge for the IC or European title. Tag titles: the team of that wrestler. */
 static const struct {
     const char *name;
-    uint8_t kind, division, num, attire;
+    uint8_t kind, division, num, attire, no_world;
 } BELTS[] = {
-    {"WWF Title",       U_TITLE_SINGLES, U_DIV_MEN,   19, 0},   /* Kurt Angle */
-    {"Tag Team Titles", U_TITLE_TAG,     U_DIV_MEN,   29, 0},   /* Edge & Christian (Edge's team) */
-    {"IC Title",        U_TITLE_SINGLES, U_DIV_MEN,   12, 0},   /* Mr. Ass */
-    {"European Title",  U_TITLE_SINGLES, U_DIV_MEN,   41, 0},   /* Al Snow */
-    {"Hardcore Title",  U_TITLE_SINGLES, U_DIV_MEN,   42, 0},   /* Steve Blackman */
-    {"Lt Heavyweight",  U_TITLE_SINGLES, U_DIV_LIGHT, 15, 0},   /* Dean Malenko */
-    {"Women's Title",   U_TITLE_SINGLES, U_DIV_WOMEN, 56, 0},   /* Ivory */
+    {"WWF Title",       U_TITLE_SINGLES, U_DIV_MEN,   19, 0, 0},   /* Kurt Angle */
+    {"Tag Team Titles", U_TITLE_TAG,     U_DIV_MEN,   29, 0, 0},   /* Edge & Christian (Edge's team) */
+    {"IC Title",        U_TITLE_SINGLES, U_DIV_MEN,   12, 0, 1},   /* Mr. Ass */
+    {"European Title",  U_TITLE_SINGLES, U_DIV_MEN,   41, 0, 1},   /* Al Snow */
+    {"Hardcore Title",  U_TITLE_SINGLES, U_DIV_MEN,   42, 0, 0},   /* Steve Blackman */
+    {"Lt Heavyweight",  U_TITLE_SINGLES, U_DIV_LIGHT, 15, 0, 0},   /* Dean Malenko */
+    {"Women's Title",   U_TITLE_SINGLES, U_DIV_WOMEN, 56, 0, 0},   /* Ivory */
 };
 
 /* Universe id of a game number (attire 0); Mankind / Cactus Jack / Mick
@@ -292,34 +292,49 @@ static void game_allies(Universe *u)
  * other (a mutual first rival is hottest), hottest added first. Rivals
  * outside the regular roster or of the other gender, and allies, are
  * left out. */
+static int order(int a, int b)   /* a pair's place in wrestler order */
+{
+    return a < b ? a * 256 + b : b * 256 + a;
+}
+
 static void game_rivalries(Universe *u)
 {
-    static uint8_t heat[U_MAX_WRESTLERS][U_MAX_WRESTLERS];  /* side weights */
-    int n, k, a, b, best;
-    for (a = 0; a < U_MAX_WRESTLERS; a++)
-        for (b = 0; b < U_MAX_WRESTLERS; b++) heat[a][b] = 0;
+    static struct { uint8_t a, b, wa, wb; } pair[64 * 3];   /* wa: a's weight for b */
+    int np = 0, n, k, i, best;
     for (n = 1; n <= 64; n++) {
-        a = who(u, (uint8_t)n);
+        int a = who(u, (uint8_t)n), b;
         if (!regular(u, a)) continue;
         for (k = 0; k < 3; k++) {
             b = who(u, REL[n - 1].rival[k]);
             if (!regular(u, b) || a == b || u->w[a].gender != u->w[b].gender) continue;
             if (u_ally_level(u, (uint8_t)a, (uint8_t)b) >= U_ALLY_CLOSE) continue;
-            if (RIVAL_WEIGHT[k] > heat[a][b]) heat[a][b] = RIVAL_WEIGHT[k];
+            for (i = 0; i < np && !((pair[i].a == a && pair[i].b == b) ||
+                                    (pair[i].a == b && pair[i].b == a)); i++) {}
+            if (i == np) {
+                pair[np].a = (uint8_t)a; pair[np].b = (uint8_t)b;
+                pair[np].wa = pair[np].wb = 0;
+                np++;
+            }
+            if (pair[i].a == a && RIVAL_WEIGHT[k] > pair[i].wa) pair[i].wa = RIVAL_WEIGHT[k];
+            if (pair[i].a != a && RIVAL_WEIGHT[k] > pair[i].wb) pair[i].wb = RIVAL_WEIGHT[k];
         }
     }
-    do {
-        int ba = 0, bb = 0;
+    do {                         /* hottest first (ties: in wrestler order) */
+        int bi = -1;
         best = 0;
-        for (a = 0; a < u->n_wrestlers; a++)
-            for (b = a + 1; b < u->n_wrestlers; b++)
-                if (heat[a][b] + heat[b][a] > best) {
-                    best = heat[a][b] + heat[b][a];
-                    ba = a; bb = b;
-                }
+        for (i = 0; i < np; i++) {
+            int h = pair[i].wa + pair[i].wb;
+            if (h > best || (h == best && h && order(pair[i].a, pair[i].b) <
+                                                order(pair[bi].a, pair[bi].b))) {
+                best = h;
+                bi = i;
+            }
+        }
         if (best) {
-            u_add_rivalry(u, (uint8_t)ba, (uint8_t)bb, (uint8_t)(15 + best / 2));
-            heat[ba][bb] = heat[bb][ba] = 0;
+            int lo = pair[bi].a < pair[bi].b ? pair[bi].a : pair[bi].b;
+            int hi = pair[bi].a < pair[bi].b ? pair[bi].b : pair[bi].a;
+            u_add_rivalry(u, (uint8_t)lo, (uint8_t)hi, (uint8_t)(15 + best / 2));
+            pair[bi].wa = pair[bi].wb = 0;
         }
     } while (best);
 }
@@ -352,7 +367,9 @@ void roster_universe(Universe *u, uint32_t seed)
                                              : id_of(u, BELTS[i].num, BELTS[i].attire);
         int t = u_add_title(u, BELTS[i].name, U_BRAND_RAW, BELTS[i].kind,
                             h >= 0 ? (uint8_t)h : U_NONE);
-        if (t >= 0) u_set_division(u, (uint8_t)t, BELTS[i].division);
+        if (t < 0) continue;
+        u_set_division(u, (uint8_t)t, BELTS[i].division);
+        u_set_no_world(u, (uint8_t)t, BELTS[i].no_world);   /* (IC, European) */
     }
     game_rivalries(u);
 }

@@ -3,8 +3,12 @@
  * (menu overlay draw_text routines) on top of the Single Play menu.
  *
  * Card view:    Up/Down choose a match, A simulate it, START simulate the
- *               whole card, A on a finished card -> results, B back.
- * Results view: headlines of the show, A -> next show.
+ *               whole card, A on a finished card -> results, B back,
+ *               L rankings.
+ * Results view: headlines of the show, A -> next show, L rankings.
+ * Rankings:     L / R pages (men, women, tag teams, each belt with its
+ *               champion and top 5 contenders, injuries), Up/Down scroll,
+ *               B back.
  */
 #include "../../engine/universe.h"
 #include "../../host/roster.h"
@@ -27,14 +31,17 @@ typedef void (*draw_text_fn)(void *holder, const char *s, int x, int y,
 #define B_DDOWN  0x0400
 #define B_Z      0x2000
 #define B_R      0x0010
+#define B_L      0x0020
 
 static Universe U;
 static UShow    SHOW;
-static uint8_t  started, show_ready, cursor, top, view;  /* view 0 card, 1 results */
+static uint8_t  started, show_ready, cursor, top, view;  /* view 0 card, 1 results, 2 rankings */
+static uint8_t  rk_page, rk_top, rk_back;   /* rankings page, scroll, view to go back to */
 static uint8_t  pending = U_NONE, pending_watch;    /* match being played/watched in the game */
 
 #define MAX_LINES 10
 #define LINE_LEN  48
+#define RK_ROWS   9      /* rankings lines on screen */
 static char headline[MAX_LINES][LINE_LEN];
 static int  n_headlines;
 
@@ -253,6 +260,9 @@ static void finish_show(void)
             s_init(&s, headline[n_headlines++], LINE_LEN);
             s_add(&s, "Injured: ");
             s_add(&s, U.w[m->injured].name);
+            s_add(&s, ", out ");
+            s_num(&s, m->injury_weeks);
+            s_add(&s, m->injury_weeks == 1 ? " week" : " weeks");
         }
     }
     if (!n_headlines) {
@@ -331,8 +341,29 @@ static void match_rules(const UMatch *m, uint8_t *r)
     r[10] = m->stip == U_STIP_IRONMAN && m->format == U_FMT_TAG;  /* game default */
 }
 
+/* Rankings pages: men, women, tag teams, one per belt, injuries */
+static int rk_pages(void) { return 3 + U.n_titles + 1; }
+static int rk_lines(void);
+
 int us_input(uint16_t pressed)
 {
+    if (view == 2) {                      /* rankings */
+        int n = rk_lines();
+        if (pressed & B_B) view = rk_back;
+        if (pressed & (B_L | B_R)) {
+            rk_page = (uint8_t)((rk_page + ((pressed & B_R) ? 1 : rk_pages() - 1)) % rk_pages());
+            rk_top = 0;
+        }
+        if ((pressed & B_DUP) && rk_top) rk_top--;
+        if ((pressed & B_DDOWN) && rk_top + RK_ROWS < n) rk_top++;
+        return 1;
+    }
+    if (pressed & B_L) {
+        rk_back = view;
+        view = 2;
+        rk_top = 0;
+        return 1;
+    }
     if (pressed & B_B) return 0;
     if (view == 1) {                      /* results -> next card */
         if (pressed & (B_A | B_START)) us_enter(0);
@@ -629,6 +660,115 @@ void us_draw_cover(void *holder)
     DRAW_TEXT_C(holder, "UNIVERSE", 240, 110, 0xFF, TEXT_STYLE, TEXT_FLAGS);
 }
 
+/* ---- Rankings screen ---- */
+
+#define RK_MAX   64
+static char rk_text[RK_MAX][LINE_LEN];
+
+static const char *rk_title(void)
+{
+    if (rk_page == 0) return "Men";
+    if (rk_page == 1) return "Women";
+    if (rk_page == 2) return "Tag Teams";
+    if (rk_page < 3 + U.n_titles) return U.t[rk_page - 3].name;
+    return "Injuries";
+}
+
+/* the singles title a wrestler holds, or 0 */
+static const char *title_held(uint8_t id)
+{
+    int t;
+    for (t = 0; t < U.n_titles; t++)
+        if (U.t[t].kind == U_TITLE_SINGLES && u_title_holder(&U, (uint8_t)t) == id)
+            return U.t[t].name;
+    return 0;
+}
+
+static void rk_add_ranked(Str *s, int pos, const char *name)
+{
+    s_num(s, (unsigned)pos);
+    s_add(s, ". ");
+    s_add(s, name);
+}
+
+/* fills rk_text for the current page; returns the number of lines */
+static int rk_lines(void)
+{
+    uint8_t ids[U_MAX_WRESTLERS];
+    Str s;
+    int n = 0, i, k;
+    if (rk_page < 2) {                                    /* men, women */
+        k = u_division_rankings(&U, rk_page ? U_DIV_WOMEN : U_DIV_MEN, ids, U_MAX_WRESTLERS);
+        for (i = 0; i < k && n < RK_MAX; i++) {
+            const UWrestler *w = &U.w[ids[i]];
+            s_init(&s, rk_text[n++], LINE_LEN);
+            rk_add_ranked(&s, i + 1, w->name);
+            s_add(&s, " - ");
+            s_num(&s, w->points);
+            if (w->injured_weeks) s_add(&s, " - injured");
+        }
+    } else if (rk_page == 2) {                            /* tag teams */
+        k = u_team_rankings(&U, U_NONE, ids, U_MAX_TEAMS);
+        for (i = 0; i < k && n < RK_MAX; i++) {
+            s_init(&s, rk_text[n++], LINE_LEN);
+            rk_add_ranked(&s, i + 1, U.tm[ids[i]].name);
+            s_add(&s, " - ");
+            s_num(&s, U.tm[ids[i]].points);
+        }
+    } else if (rk_page < 3 + U.n_titles) {                /* a belt */
+        uint8_t t = (uint8_t)(rk_page - 3), h = u_title_holder(&U, t);
+        int tag = U.t[t].kind == U_TITLE_TAG;
+        s_init(&s, rk_text[n++], LINE_LEN);
+        if (h == U_NONE) {
+            s_add(&s, "Vacant");
+        } else {
+            s_add(&s, "Champion: ");
+            s_add(&s, tag ? U.tm[h].name : U.w[h].name);
+        }
+        s_init(&s, rk_text[n++], LINE_LEN);
+        k = u_contenders(&U, t, ids, U_CONTENDERS);
+        for (i = 0; i < k; i++) {
+            const char *held = tag ? 0 : title_held(ids[i]);
+            s_init(&s, rk_text[n++], LINE_LEN);
+            rk_add_ranked(&s, i + 1, tag ? U.tm[ids[i]].name : U.w[ids[i]].name);
+            if (held) { s_add(&s, " - "); s_add(&s, held); }
+        }
+        if (!k) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No contenders"); }
+    } else {                                              /* injuries */
+        k = u_injuries(&U, ids, U_MAX_WRESTLERS);
+        for (i = 0; i < k && n < RK_MAX; i++) {
+            const UWrestler *w = &U.w[ids[i]];
+            s_init(&s, rk_text[n++], LINE_LEN);
+            s_add(&s, w->name);
+            s_add(&s, " - out ");
+            s_num(&s, w->injured_weeks);
+            s_add(&s, w->injured_weeks == 1 ? " week" : " weeks");
+        }
+        if (!k) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No injuries"); }
+    }
+    return n;
+}
+
+static void draw_rankings(void *holder)
+{
+    static char head[LINE_LEN];
+    Str s;
+    int n = rk_lines(), i, y;
+    if (rk_top + RK_ROWS > n) rk_top = (uint8_t)(n > RK_ROWS ? n - RK_ROWS : 0);
+    text(holder, "RANKINGS", 22);
+    s_init(&s, head, LINE_LEN);
+    s_add(&s, "$2  ");
+    s_add(&s, rk_title());
+    s_add(&s, "  $3");
+    text(holder, head, 38);
+    for (i = rk_top, y = 58; i < n && i < rk_top + RK_ROWS; i++, y += 14) {
+        int len = 0;
+        while (rk_text[i][len]) len++;
+        text_scaled(holder, rk_text[i], y, len > 30 ? 0xB0 : 0xD8);
+    }
+    small(holder, n > RK_ROWS ? "$2$3Pages  $a$bScroll  $1Back" : "$2$3Pages  $1Back", 200);
+}
+
 void us_draw(void *holder)
 {
     static char line[12][LINE_LEN];
@@ -637,6 +777,10 @@ void us_draw(void *holder)
 
     if (cover) return;                    /* drawn over the whole frame instead */
     panel(holder, 250, 8, 476, 228);
+    if (view == 2) {
+        draw_rankings(holder);
+        return;
+    }
     text(holder, "UNIVERSE", 22);
     s_init(&s, line[0], LINE_LEN);
     s_add(&s, "Week ");
@@ -649,6 +793,7 @@ void us_draw(void *holder)
     if (view == 1) {
         for (i = 0; i < n_headlines; i++) small(holder, headline[i], 62 + i * 15);
         text(holder, "$0Next Show   $1Back", 198);
+        small(holder, "$2Rankings", 214);
         return;
     }
 
@@ -715,6 +860,7 @@ void us_draw(void *holder)
         }
         if (s.n) small(holder, line[10], 185);
     }
+    small(holder, "$2Rankings", 214);
     if (card_done())
         text(holder, "$0Results   $1Back", 200);
     else if (SHOW.m[cursor].done || !u_match_ready(&SHOW.m[cursor]))

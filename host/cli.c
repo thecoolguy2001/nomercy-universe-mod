@@ -91,17 +91,35 @@ static void print_status(const Universe *u)
         printf("\n== %s ==\n", b ? "Women" : "Men");
         for (i = 0; i < n; i++) {
             const UWrestler *w = &u->w[rank[i]];
-            printf("  %2d. %-16s %s  %3u-%-3u mom %+4d%s\n", i + 1, w->name,
-                   w->align == U_FACE ? "face" : "heel", w->wins, w->losses,
-                   w->momentum, w->injured_weeks ? "  [injured]" : "");
+            printf("  %2d. %-16s %4u pts  %s  %3u-%-3u streak %+3d%s\n", i + 1, w->name,
+                   w->points, w->align == U_FACE ? "face" : "heel", w->wins, w->losses,
+                   w->streak, w->injured_weeks ? "  [injured]" : "");
         }
     }
     n = u_team_rankings(u, U_NONE, rank, U_MAX_TEAMS);
     printf("\n== Tag teams ==\n");
     for (i = 0; i < n; i++) {
         const UTeam *t = &u->tm[rank[i]];
-        printf("  %2d. %-16s %3u-%-3u\n", i + 1, t->name, t->wins, t->losses);
+        printf("  %2d. %-16s %4u pts  %3u-%-3u streak %+3d\n", i + 1, t->name, t->points,
+               t->wins, t->losses, t->streak);
     }
+    printf("\n== Title pictures (champion, top %d contenders) ==\n", U_CONTENDERS);
+    for (i = 0; i < u->n_titles; i++) {
+        const UTitle *t = &u->t[i];
+        uint8_t h = u_title_holder(u, (uint8_t)i);
+        printf("  %-16s %s:", t->name, h == U_NONE ? "(vacant)" : holder_name(u, t, h));
+        n = u_contenders(u, (uint8_t)i, rank, U_CONTENDERS);
+        for (k = 0; k < n; k++)
+            printf("%s %d. %s", k ? "," : "", k + 1,
+                   t->kind == U_TITLE_TAG ? u->tm[rank[k]].name : u->w[rank[k]].name);
+        printf("\n");
+    }
+    printf("\n== Injuries ==\n");
+    n = u_injuries(u, rank, U_MAX_WRESTLERS);
+    for (i = 0; i < n; i++)
+        printf("  %-16s %u week%s\n", u->w[rank[i]].name, u->w[rank[i]].injured_weeks,
+               u->w[rank[i]].injured_weeks == 1 ? "" : "s");
+    if (!n) printf("  (none)\n");
     printf("\n== Rivalries ==\n");
     for (i = 0, k = 0; i < U_MAX_RIVALRIES; i++) {
         const URivalry *r = &u->r[i];

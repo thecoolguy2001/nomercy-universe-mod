@@ -45,9 +45,10 @@ TEXT_HOOK_ORIG = bytes.fromhex("0c037708")                # jal 0x800DDC20
 TEXT_HOOK_NEW = bytes.fromhex("0c104006")                 # jal 0x80410018
 # New label asset (packed) goes in the unused ROM padding before the payload
 LABEL_ROM = 0x1FA8000
-# Arena pictures (tools/make_arenas.py) after the payload; the boot loader
-# copies them to RAM 0x80480000
-ARENAS_ROM = 0x1FD0000
+# Arena pictures (tools/make_arenas.py) at the very end of the ROM (after
+# the payload's room); the boot loader copies them to RAM 0x80480000.
+# Must match ARENAS_CART in n64/loader.c.
+ARENAS_ROM = 0x2000000 - 10 * 6 * 2560   # 0x1FDA800
 # Single Play entry of the main-menu table (overlay stored uncompressed;
 # RAM 0x8014F4E0): (0x8014D47C, 2 items) -> (0x80409000, 3 items)
 SP_TABLE_ROM = 0xF5C80

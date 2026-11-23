@@ -100,6 +100,9 @@ typedef struct {
     uint16_t weight;        /* lbs as the game has it, 0 = not given */
     uint16_t wins;
     uint16_t losses;
+    uint16_t points;        /* ranking points (see u_rankings) */
+    int8_t   streak;        /* wins (> 0) or losses (< 0) in a row */
+    uint16_t last_show;     /* 4 * week + slot of his last match, 0 = none yet */
 } UWrestler;
 
 typedef struct {
@@ -108,6 +111,8 @@ typedef struct {
     uint8_t  active;
     uint16_t wins;
     uint16_t losses;
+    uint16_t points;        /* tag team ranking points */
+    int8_t   streak;
 } UTeam;
 
 typedef struct {
@@ -126,6 +131,7 @@ typedef struct {
     uint8_t  reign_count;   /* total reigns ever (history wraps at U_MAX_REIGNS) */
     uint8_t  division;      /* U_DIV_* (singles titles) */
     uint16_t last_week;     /* week of its last title match */
+    uint8_t  no_world;      /* the World champion can't challenge (IC, European) */
     UReign   history[U_MAX_REIGNS];
 } UTitle;
 
@@ -199,12 +205,12 @@ typedef struct {
     UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 7      /* bumped when the layout changes */
+#define U_SAVE_VERSION 8      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
-#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 17)
-#define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 7)
-#define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 8 + U_MAX_REIGNS * 6)
+#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 22)
+#define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 10)
+#define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 9 + U_MAX_REIGNS * 6)
 #define U_SAVE_SIZE (U_SAVE_HEADER_BYTES \
                      + U_MAX_WRESTLERS * U_SAVE_WRESTLER_BYTES \
                      + U_MAX_TEAMS * U_SAVE_TEAM_BYTES \
@@ -220,6 +226,8 @@ int     u_add_fillin(Universe *u, const char *name, uint8_t game_slot, uint8_t o
 int     u_set_game_details(Universe *u, uint8_t id, uint8_t attire, uint8_t gender,
                            uint16_t weight);
 int     u_set_division(Universe *u, uint8_t title, uint8_t division);
+/* the World champion (title 0's) can't challenge for this title */
+int     u_set_no_world(Universe *u, uint8_t title, uint8_t on);
 int     u_set_persona(Universe *u, uint8_t id, uint8_t persona);
 /* a new universe's champion (replaces the first reign; team id for tag titles) */
 int     u_set_champion(Universe *u, uint8_t title, uint8_t holder);
@@ -239,11 +247,24 @@ int     u_set_active(Universe *u, uint8_t id, uint8_t active); /* vacates titles
 uint8_t u_title_holder(const Universe *u, uint8_t title);
 int     u_score(const UWrestler *w);
 int     u_team_score(const Universe *u, uint8_t team);
+/* Rankings run on ranking points (notes/universe-plan.md, Rankings): a win
+ * scores more against a higher-ranked opponent, PPV wins double, a win
+ * streak adds a bonus, a loss costs points (more for an upset), every week
+ * points decay by a tenth (injured wrestlers lose another tenth). A new
+ * wrestler or team starts from its ability. Men, women and tag teams are
+ * ranked separately (u_division_rankings, u_team_rankings). */
 int     u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
 /* regular wrestlers who may hold a title of that division, best first */
 int     u_division_rankings(const Universe *u, uint8_t division, uint8_t *out, int max);
 int     u_eligible(const Universe *u, uint8_t id, uint8_t division);
 int     u_team_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
+/* A title's contenders, best first (the top U_CONTENDERS are its title
+ * picture): healthy wrestlers of its division (or tag teams) other than the
+ * champion, without the World champion for a no_world title. */
+#define U_CONTENDERS 5
+int     u_contenders(const Universe *u, uint8_t title, uint8_t *out, int max);
+/* injured regulars, most weeks out first */
+int     u_injuries(const Universe *u, uint8_t *out, int max);
 uint32_t u_rand(Universe *u, uint32_t n);
 int     u_ppv_index(const Universe *u);  /* 0 Royal Rumble .. 11 Armageddon (next PPV) */
 void    u_next_show(const Universe *u, uint8_t *kind, uint8_t *brand);

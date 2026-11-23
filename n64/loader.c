@@ -33,7 +33,7 @@ void boot_ui_main(void);
 
 /* Arena pictures (tools/make_arenas.py), stored after the payload in ROM;
  * copied next to the resident module (where it expects them). */
-#define ARENAS_CART  0x11FD0000u
+#define ARENAS_CART  0x11FDA800u          /* the last 0x25800 bytes of the ROM (tools/build_rom.py) */
 #define ARENAS_RAM   0x00480000u          /* = ARENAS_ADDR 0x80480000 */
 #define ARENAS_LEN   (10u * 6u * 2560u)
 #define PI_REG(o)    (*(volatile uint32_t *)(0xA4600000u + (o)))
