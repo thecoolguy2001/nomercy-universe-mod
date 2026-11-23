@@ -1,4 +1,4 @@
-/* Bare-metal N64 hardware access for the boot-time Universe screen. */
+/* Bare-metal N64 hardware access for the boot payload (memory size, video, pad). */
 #ifndef HW_H
 #define HW_H
 #include <stdint.h>

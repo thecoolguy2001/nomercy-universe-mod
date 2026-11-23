@@ -1,14 +1,13 @@
 /*
  * Boot payload entry: installs the resident Universe module into Expansion
- * Pak RAM, then starts No Mercy. Holding Z at power-on shows the old
- * boot-time Universe screen first.
+ * Pak RAM, then starts No Mercy. (The old boot-time Universe screen, held Z
+ * at power-on, is gone: Universe lives on the Single Play menu.)
  */
 #include "hw.h"
 #include "resident/resident.h"
 
 extern const uint8_t resident_image[];
 extern const uint32_t resident_image_size;
-void boot_ui_main(void);
 
 /* osContGetReadData in RAM; the ROM has "j 0x80410000; nop" here. */
 #define HOOK_ADDR       0x800346A8u
@@ -108,9 +107,5 @@ void n64_main(void)
     } else
         remove_hook();           /* no Expansion Pak: play the unmodified game */
 
-    if (pad_read() & BTN_Z) {
-        vi_init();
-        boot_ui_main();
-    }
     handoff_to_game();
 }

@@ -144,12 +144,13 @@ static void test_booking_invariants(void)
         else roster_universe(&u, seed);
         for (show = 0; show < 52 * 2 + 13; show++) {
             uint8_t seen[U_MAX_WRESTLERS];
-            int kotr;
+            int kotr, pi;
             memset(seen, 0, sizeof seen);
             u_book_show(&u, &s);
             CHECK(s.count >= 3); /* 12-man brand, two tag matches, injuries */
             kotr = s.kind == U_SHOW_PPV && s.m[0].kotr != 0;
-            CHECK(s.count <= (kotr ? U_MAX_MATCHES
+            pi = s.kind == U_SHOW_PPV ? u_ppv_index(&u) : -1;
+            CHECK(s.count <= (kotr ? U_MAX_MATCHES : pi == 2 ? U_PPV_MATCHES + 2   /* WrestleMania */
                               : s.kind == U_SHOW_PPV ? U_PPV_MATCHES : U_WEEKLY_MATCHES));
             for (i = 0; i < s.count; i++) {
                 const UMatch *m = &s.m[i];
@@ -206,7 +207,9 @@ static void test_booking_invariants(void)
                 for (k = 1; k < 6; k++)
                     if (m->side[k / 2][k % 2] != U_NONE && m->side[0][0] != U_NONE)
                         CHECK(u.w[m->side[k / 2][k % 2]].gender == u.w[m->side[0][0]].gender);
-                if (m->format == U_FMT_TAG) CHECK(m->team[0] != m->team[1]);
+                /* (makeshift teams, no team ids: Survivor Series) */
+                if (m->format == U_FMT_TAG)
+                    CHECK(m->team[0] != m->team[1] || (m->team[0] == U_NONE && pi == 10));
                 if (m->format == U_FMT_HANDICAP) CHECK(m->title == U_NONE);
                 /* matches made from the rankings never pit close allies */
                 if (m->title == U_NONE && m->rivalry == U_NONE && !m->kotr)
@@ -239,6 +242,7 @@ static void test_booking_invariants(void)
                     continue;
                 if (s.kind != U_SHOW_PPV) continue;
                 if (kotr && t != 0) continue;     /* King of the Ring: one defence */
+                if (pi == 10 && t != 0) continue; /* Survivor Series: one title match */
                 CHECK(seen[h]);
                 if (s.kind == U_SHOW_PPV) {
                     /* (a Rumble winner may spend WrestleMania challenging for
@@ -626,12 +630,12 @@ static void test_stips_booked(void)
 {
     uint32_t seed;
     int count[U_STIP_COUNT] = {0}, st;
-    for (seed = 1; seed <= 6; seed++) {
+    for (seed = 1; seed <= 20; seed++) {    /* (Ironman and Guest Referee are rare) */
         Universe u;
         UShow s;
         int show, i;
-        demo_universe(&u, seed);
-        for (show = 0; show < 52 * 2 + 13; show++) {
+        roster_universe(&u, seed);
+        for (show = 0; show < 3 * 112; show++) {
             u_book_show(&u, &s);
             for (i = 0; i < s.count; i++) {
                 count[s.m[i].stip]++;
@@ -877,7 +881,7 @@ static void test_game_relations(void)
 #define W(name) (uint8_t)by_name(&u, name)
     /* tag teams: the game's partners, T & A (same valet, a rival in common),
      * and the teams the game doesn't pair */
-    CHECK(team_named(&u, "Edge&Christian", "Edge", "Christian") >= 0);
+    CHECK(team_named(&u, "Edge & Christian", "Edge", "Christian") >= 0);
     CHECK(team_named(&u, "Hardy Boyz", "Matt Hardy", "Jeff Hardy") >= 0);
     CHECK(team_named(&u, "Dudley Boyz", "D-Von", "Buh Buh Ray") >= 0);
     CHECK(team_named(&u, "Too Cool", "G.M. Sexay", "Scotty") >= 0);
@@ -887,7 +891,7 @@ static void test_game_relations(void)
     CHECK(team_named(&u, "New Age Outlaws", "Road Dogg", "Mr. Ass") >= 0);
     CHECK(team_named(&u, "Kaientai", "Taka Michinoku", "Funaki") >= 0);
     CHECK(u.n_teams == 9);
-    CHECK(u_title_holder(&u, 1) == team_named(&u, "Edge&Christian", "Edge", "Christian"));
+    CHECK(u_title_holder(&u, 1) == team_named(&u, "Edge & Christian", "Edge", "Christian"));
     for (i = 0; i < u.n_teams; i++)          /* partners are close allies */
         CHECK(u_ally_level(&u, u.tm[i].a, u.tm[i].b) >= U_ALLY_CLOSE);
     /* valets and the game's other partners */
@@ -1242,13 +1246,18 @@ static void test_teams_form_and_split(void)
         uint8_t r[U_MAX_TEAMS];
         int n = u_team_rankings(&u, U_NONE, r, U_MAX_TEAMS);
         CHECK(r[n - 1] == formed);
-        u_book_show(&u, &s);
-        for (i = 0; i < s.count; i++)
-            if (s.m[i].format == U_FMT_TAG && (s.m[i].team[0] == formed || s.m[i].team[1] == formed))
-                debut = 1;
+        for (k = 0; k < 6 && !debut; k++) {      /* (a member may be busy defending a title) */
+            u_book_show(&u, &s);
+            for (i = 0; i < s.count; i++)
+                if (s.m[i].format == U_FMT_TAG &&
+                    (s.m[i].team[0] == formed || s.m[i].team[1] == formed)) {
+                    debut = 1;
+                    CHECK(s.m[i].why == U_WHY_DEBUT || s.kind == U_SHOW_PPV);
+                }
+            u_sim_show(&u, &s);
+            u_apply_show(&u, &s);
+        }
         CHECK(debut);
-        u_sim_show(&u, &s);
-        u_apply_show(&u, &s);
         CHECK(!u.tm[formed].debut);
     }
     /* saved */
@@ -1288,6 +1297,141 @@ static void test_teams_form_and_split(void)
             if (u.t[i].kind == U_TITLE_TAG && u_title_holder(&u, (uint8_t)i) != U_NONE)
                 CHECK(!u.tm[u_title_holder(&u, (uint8_t)i)].split);
     }
+}
+
+static int heat_between(const Universe *u, uint8_t a, uint8_t b)
+{
+    int i;
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        const URivalry *r = &u->r[i];
+        if (r->intensity && ((r->a == a && r->b == b) || (r->a == b && r->b == a)))
+            return r->intensity;
+    }
+    return 0;
+}
+
+/* the hottest feud across the ring */
+static int heat_of_match(const Universe *u, const UMatch *m)
+{
+    int x, y, i, j, h = 0, n = u_match_sides(m);
+    for (x = 0; x < n; x++)
+        for (y = x + 1; y < n; y++)
+            for (i = 0; i < 2; i++)
+                for (j = 0; j < 2; j++)
+                    if (m->side[x][i] != U_NONE && m->side[y][j] != U_NONE &&
+                        heat_between(u, m->side[x][i], m->side[y][j]) > h)
+                        h = heat_between(u, m->side[x][i], m->side[y][j]);
+    return h;
+}
+
+/* Plan step 8: the booking rules, show by show */
+static void test_booking_rules(void)
+{
+    enum { RR = 0, NWO, WM, BACKLASH, JD, KOTR, FL, SUMMERSLAM, UNFORGIVEN, NM, SS, ARM };
+    uint32_t seed;
+    int unforgiven = 0, uf_triple = 0, uf_handicap = 0, wm = 0, wm_ladder = 0, no1 = 0;
+    int whys[U_WHY_COUNT] = {0}, weekly_cage = 0, ss_tags = 0, three_way = 0, k;
+    for (seed = 50; seed < 62; seed++) {
+        Universe u;
+        UShow s;
+        int show, i;
+        roster_universe(&u, seed);
+        for (show = 0; show < 3 * 112; show++) {
+            int pi = u.slot == 2 ? u_ppv_index(&u) : -1;
+            int cages = 0, ladders = 0, titles = 0, others = 0, handicap = 0;
+            uint8_t rw = u.rumble_winner;
+            u_book_show(&u, &s);
+            for (i = 0; i < s.count; i++) {
+                const UMatch *m = &s.m[i];
+                int h = heat_of_match(&u, m);
+                whys[m->why]++;
+                if (m->format == U_FMT_RUMBLE || m->kotr) continue;
+                if (m->title != U_NONE) titles++; else others++;
+                handicap += m->format == U_FMT_HANDICAP;
+                /* every title match says why; others don't claim a title reason */
+                if (m->title != U_NONE)
+                    CHECK(m->why == U_WHY_NO1 || m->why == U_WHY_TITLE_RIVAL ||
+                          m->why == U_WHY_VACANT || m->why == U_WHY_CONTENDERS ||
+                          m->why == U_WHY_RUMBLE_SHOT);
+                else
+                    CHECK(m->why == U_WHY_NONE || m->why == U_WHY_RIVALRY ||
+                          m->why == U_WHY_NO1_MATCH || m->why == U_WHY_DEBUT);
+                if (m->why == U_WHY_TITLE_RIVAL) CHECK(h > 0);
+                if (m->why == U_WHY_RIVALRY && m->format == U_FMT_TRIPLE) three_way++;
+                /* Cage: hot feuds on weekly TV, No Way Out's hottest, 1 in 5
+                 * at Backlash, Fully Loaded, No Mercy, Armageddon */
+                if (m->stip == U_STIP_CAGE) {
+                    cages++;
+                    CHECK(m->format == U_FMT_SINGLE);
+                    CHECK(pi < 0 || pi == NWO || pi == BACKLASH || pi == FL || pi == NM || pi == ARM);
+                    if (pi < 0) { CHECK(h >= 70); weekly_cage++; }
+                }
+                /* Ladder: WrestleMania's title match, SummerSlam's hottest feud */
+                if (m->stip == U_STIP_LADDER) {
+                    ladders++;
+                    CHECK(pi == WM || pi == SUMMERSLAM);
+                    if (pi == WM) CHECK(m->title != U_NONE && m->title != 0);
+                }
+                /* Ironman: a champion's near-max feud at Judgment Day */
+                if (m->stip == U_STIP_IRONMAN)
+                    CHECK(pi == JD && m->title != U_NONE && h >= 85);
+                /* Guest Referee: any PPV, a rival of everyone in the match */
+                if (m->stip == U_STIP_REFEREE) {
+                    CHECK(pi >= 0);
+                    for (k = 0; k < 6; k++)
+                        if (m->side[k / 2][k % 2] != U_NONE)
+                            CHECK(heat_between(&u, m->referee, m->side[k / 2][k % 2]) > 0);
+                }
+                /* No DQ: Hardcore title matches; hot feuds on weekly TV */
+                if (m->title == 4) CHECK(m->stip == U_STIP_NODQ);
+                else if (m->stip == U_STIP_NODQ) CHECK(pi < 0 && h >= 70);
+                if (m->why == U_WHY_NO1_MATCH) {
+                    CHECK(pi < 0 && m->why_title < u.n_titles);
+                    no1++;
+                }
+                if (pi == SS && m->title == U_NONE) { CHECK(m->format == U_FMT_TAG); ss_tags++; }
+            }
+            CHECK(cages <= (pi < 0 ? s.count : 1));
+            CHECK(ladders <= (pi == WM || pi == SUMMERSLAM ? 1 : 0));
+            if (pi == RR) CHECK(others <= 1);                     /* ONE feud */
+            if (pi == SS) CHECK(titles <= 1 && (titles == 0 || s.m[s.count - 1].title == 0 ||
+                                                 s.m[s.count - 1].format == U_FMT_TAG));
+            if (pi == UNFORGIVEN) {
+                unforgiven++;
+                uf_handicap += handicap > 0;
+                for (i = 0; i < s.count; i++)
+                    if (s.m[i].title == 0) uf_triple += s.m[i].format == U_FMT_TRIPLE;
+            }
+            if (pi == WM) {
+                wm++;
+                wm_ladder += ladders;
+                for (i = 0; i < s.count; i++)                     /* the World title */
+                    if (s.m[i].title == 0) {                      /* main event */
+                        CHECK(i == s.count - 1);
+                        if (rw != U_NONE && !u.w[rw].injured_weeks && rw != u_title_holder(&u, 0))
+                            CHECK(involves(&s.m[i], rw));
+                    }
+            }
+            u_sim_show(&u, &s);
+            u_apply_show(&u, &s);
+            /* the winner of a No. 1 Contender Match is now No. 1 */
+            for (i = 0; i < s.count; i++) {
+                const UMatch *m = &s.m[i];
+                uint8_t con[U_MAX_WRESTLERS], w;
+                if (m->why != U_WHY_NO1_MATCH || m->winner >= 2) continue;
+                w = u.t[m->why_title].kind == U_TITLE_TAG ? m->team[m->winner] : m->side[m->winner][0];
+                if (u.w[m->side[m->winner][0]].injured_weeks ||
+                    (m->side[m->winner][1] != U_NONE && u.w[m->side[m->winner][1]].injured_weeks))
+                    continue;                             /* (out of the picture) */
+                CHECK(u_contenders(&u, m->why_title, con, 1) == 1 && con[0] == w);
+            }
+        }
+    }
+    CHECK(uf_triple * 10 >= unforgiven * 9 && uf_handicap * 10 >= unforgiven * 9);
+    CHECK(wm_ladder * 10 >= wm * 9);
+    CHECK(no1 > 0 && weekly_cage > 0 && ss_tags > 0 && three_way > 0);
+    for (k = 0; k < U_WHY_COUNT; k++)
+        if (k != U_WHY_VACANT) CHECK(whys[k] > 0);
 }
 
 /* Title contenders: the top 5 per belt (plan step 6) */
@@ -1362,6 +1506,7 @@ int main(void)
     test_title_pictures();
     test_allies_over_time();
     test_teams_form_and_split();
+    test_booking_rules();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;

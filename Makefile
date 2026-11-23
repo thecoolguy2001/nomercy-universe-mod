@@ -12,8 +12,7 @@ N64_CC     = clang
 N64_FLAGS  = --target=mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls -fno-pic \
              -G0 -msoft-float -mno-check-zero-division -ffreestanding -fno-builtin \
              -fno-stack-protector -std=c99 -Os -Wall -Wextra -Werror
-N64_OBJS   = build/n64/crt0.o build/n64/loader.o build/n64/ui.o build/n64/hw.o \
-             build/n64/libc.o build/n64/universe.o build/n64/demo_roster.o
+N64_OBJS   = build/n64/crt0.o build/n64/loader.o build/n64/hw.o build/n64/libc.o
 RES_OBJS   = build/n64/res_entry.o build/n64/res_resident.o build/n64/res_uscreen.o \
              build/n64/res_libc.o build/n64/universe.o build/n64/demo_roster.o \
              build/n64/roster.o

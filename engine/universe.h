@@ -25,9 +25,9 @@
 #define U_MAX_MATCHES    20  /* King of the Ring PPV: 15 tournament matches + 2 */
 #define U_WEEKLY_MATCHES 7
 #define U_WEEKLY_FEUDS   4    /* rivalry matches per weekly show (the rest from rankings) */
-#define U_PPV_MATCHES    8
+#define U_PPV_MATCHES    10   /* (WrestleMania: 2 more) */
 #define U_PPV_EVERY      4   /* a PPV closes every 4th week */
-#define U_NAME_LEN       16  /* includes terminating zero */
+#define U_NAME_LEN       20  /* includes terminating zero ("Undertaker & Holly") */
 #define U_RUMBLE_MAX     40  /* Royal Rumble entrants (No Mercy: 4 to 40, steps of 4) */
 #define U_KOTR_MATCHES   15  /* King of the Ring bracket: 8 + 4 + 2 + 1 */
 
@@ -188,7 +188,23 @@ typedef struct {
     uint8_t injury_weeks;
     uint8_t run_in;         /* simulated: a companion who ran in to help, else U_NONE */
     uint8_t run_in_for;     /* ... the wrestler he helped */
+    uint8_t why;            /* U_WHY_*: why it is on the card (shown with it) */
+    uint8_t why_title;      /* the title a No. 1 Contender Match is for */
 } UMatch;
+
+/* Why a match is booked (notes/universe-plan.md, Rankings: "Card shows why") */
+enum {
+    U_WHY_NONE = 0,         /* a regular match (rankings) */
+    U_WHY_RIVALRY,          /* "Rivalry" */
+    U_WHY_NO1,              /* "<Title> - Champion vs No. 1 Contender" */
+    U_WHY_TITLE_RIVAL,      /* "<Title> - Champion vs Rival" (a top-5 contender) */
+    U_WHY_VACANT,           /* "<Title> - Vacant: No. 1 vs No. 2" */
+    U_WHY_CONTENDERS,       /* "<Title> - Champion vs Top Contenders" (Triple Threat) */
+    U_WHY_RUMBLE_SHOT,      /* "<Title> - Royal Rumble Winner's Shot" */
+    U_WHY_NO1_MATCH,        /* "No. 1 Contender Match (<Title>)": No. 2 vs No. 3 */
+    U_WHY_DEBUT,            /* "Tag Team Debut" */
+    U_WHY_COUNT
+};
 
 typedef struct {
     uint16_t week;
@@ -217,7 +233,7 @@ typedef struct {
     UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 9      /* bumped when the layout changes */
+#define U_SAVE_VERSION 10     /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
 #define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 22)
@@ -295,6 +311,8 @@ int     u_match_sides(const UMatch *m);      /* 3 for a triple threat, else 2 */
  * zero-terminated within cap; returns the length. */
 int     u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap);
 int     u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int cap);
+/* Why it's on the card (above); "" for a regular match. Returns the length. */
+int     u_why_text(const Universe *u, const UMatch *m, char *buf, int cap);
 const char *u_method_name(uint8_t method, uint8_t stip);
 int     u_method_allowed(uint8_t stip, uint8_t method);
 /* Format + stipulation combinations No Mercy can stage (notes/universe-plan.md):

@@ -182,7 +182,7 @@ static const struct { const char *name; uint8_t a, aa, b, ba; } OWN_TEAMS[] = {
 
 /* Names for the teams the game's data pairs (by first member's number) */
 static const struct { uint8_t num; const char *name; } TEAM_NAMES[] = {
-    {29, "Edge&Christian"}, {31, "Hardy Boyz"}, {35, "Dudley Boyz"},
+    {29, "Edge & Christian"}, {31, "Hardy Boyz"}, {35, "Dudley Boyz"},
     {27, "Too Cool"}, {5, "Right to Censor"}, {21, "T & A"},
 };
 

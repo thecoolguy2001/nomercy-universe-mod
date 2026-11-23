@@ -89,7 +89,7 @@ void demo_universe(Universe *u, uint32_t seed)
         u_add_wrestler(u, ROSTER[i].name, U_NONE, ROSTER[i].brand,
                        ROSTER[i].align, ROSTER[i].overall);
 
-    ec     = u_add_team(u, "Edge&Christian", 6, 7);
+    ec     = u_add_team(u, "Edge & Christian", 6, 7);
     dud    = u_add_team(u, "Dudley Boyz", 8, 9);
     hardys = u_add_team(u, "Hardy Boyz", 18, 19);
     nao    = u_add_team(u, "New Age Outlaws", 20, 21);

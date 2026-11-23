@@ -33,6 +33,8 @@
 #define U_FEUD_SET       30   /* a rivalry this hot counts for common rivals and saves */
 #define U_RUN_IN_HEAT    35   /* a run-in starts a rivalry with the other side */
 #define U_FEUD_COOL      2    /* heat a rivalry loses per show it isn't on */
+#define U_FEUD_BUILD     20   /* heat a clean finish adds to a feud that goes on
+                                 (feuds build up to the PPV) */
 
 /* ---------- small helpers (no libc) ---------- */
 
@@ -153,6 +155,35 @@ int u_side_text(const Universe *u, const UMatch *m, int side, char *buf, int cap
         n = append(buf, n, cap, u->w[m->side[side][1]].name);
     }
     return n;
+}
+
+int u_why_text(const Universe *u, const UMatch *m, char *buf, int cap)
+{
+    static const char *const TAIL[U_WHY_COUNT] = {
+        "", "", " - Champion vs No. 1 Contender", " - Champion vs Rival",
+        " - Vacant: No. 1 vs No. 2", " - Champion vs Top Contenders",
+        " - Royal Rumble Winner's Shot", "", ""};
+    int n = 0;
+    if (cap <= 0) return 0;
+    buf[0] = 0;
+    switch (m->why) {
+    case U_WHY_RIVALRY:
+        return append(buf, 0, cap, "Rivalry");
+    case U_WHY_DEBUT:
+        return append(buf, 0, cap, "Tag Team Debut");
+    case U_WHY_NO1_MATCH:
+        if (m->why_title >= u->n_titles) return 0;
+        n = append(buf, 0, cap, "No. 1 Contender Match (");
+        n = append(buf, n, cap, u->t[m->why_title].name);
+        return append(buf, n, cap, ")");
+    case U_WHY_NO1: case U_WHY_TITLE_RIVAL: case U_WHY_VACANT:
+    case U_WHY_CONTENDERS: case U_WHY_RUMBLE_SHOT:
+        if (m->title >= u->n_titles) return 0;
+        n = append(buf, 0, cap, u->t[m->title].name);
+        return append(buf, n, cap, TAIL[m->why]);
+    default:
+        return 0;
+    }
 }
 
 int u_match_text(const Universe *u, const UMatch *m, int result, char *buf, int cap)
@@ -660,6 +691,14 @@ static int teams_allied(const Universe *u, uint8_t x, uint8_t y)
            allies(u, a->b, b->a) || allies(u, a->b, b->b);
 }
 
+static int rivalries_of(const Universe *u, uint8_t id)
+{
+    int i, n = 0;
+    for (i = 0; i < U_MAX_RIVALRIES; i++)
+        n += u->r[i].intensity && (u->r[i].a == id || u->r[i].b == id);
+    return n;
+}
+
 static int in_rivalry(const Universe *u, uint8_t id)
 {
     int i;
@@ -928,8 +967,6 @@ static void book_rumble(Booker *b, const uint8_t *rank, int n_rank)
  * wrestlers left (seeded 1 v 16, 8 v 9, ...; 8 men if fewer are available).
  * Card order: first round, quarterfinals, the rivalry, semifinals, the title
  * match, the final as the main event. */
-static uint8_t feud_stip(Booker *b, const URivalry *r, int title_match);
-
 static void book_kotr(Booker *b, const uint8_t *rank, int n)
 {
     static const uint8_t SEED16[16] = {0, 15, 7, 8, 4, 11, 3, 12, 2, 13, 5, 10, 6, 9, 1, 14};
@@ -974,85 +1011,180 @@ static void book_kotr(Booker *b, const uint8_t *rank, int n)
             m->kotr = (uint8_t)(1 + first + i);
     }
     for (i = first + size / 2; size && i < U_KOTR_MATCHES; i++) {  /* later rounds: TBD */
-        if (i == 12 && feud[0] != U_NONE)
-            book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, feud_stip(b, &u->r[ri], 0));
-        if (i == 14 && title[0] != U_NONE)
-            book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL);
+        if (i == 12 && feud[0] != U_NONE &&
+            (m = book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, U_STIP_NORMAL)) != 0)
+            m->why = U_WHY_RIVALRY;
+        if (i == 14 && title[0] != U_NONE &&
+            (m = book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL)) != 0)
+            m->why = U_WHY_NO1;
         if ((m = new_match(b, U_FMT_SINGLE, U_NONE, U_STIP_NORMAL)) != 0) m->kotr = (uint8_t)(1 + i);
     }
     if (!size) {                                          /* (not enough men) */
-        if (feud[0] != U_NONE)
-            book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, feud_stip(b, &u->r[ri], 0));
-        if (title[0] != U_NONE) book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL);
+        if (feud[0] != U_NONE &&
+            (m = book_singles(b, feud[0], feud[1], U_NONE, (uint8_t)ri, U_STIP_NORMAL)) != 0)
+            m->why = U_WHY_RIVALRY;
+        if (title[0] != U_NONE &&
+            (m = book_singles(b, title[0], title[1], 0, U_NONE, U_STIP_NORMAL)) != 0)
+            m->why = U_WHY_NO1;
     }
 }
 
-/* Interim stipulations, so every match type turns up until the booking
- * step of notes/universe-plan.md (step 8) brings the real rules: weekly TV
- * hot feuds are sometimes a Cage or No DQ match; PPV hot feuds get Ladder
- * (title matches), Ironman, Cage or No DQ. */
-static uint8_t feud_stip(Booker *b, const URivalry *r, int title_match)
+/* ---- the booking rules (notes/universe-plan.md, Booking rules) ---- */
+
+enum { PPV_ROYAL_RUMBLE = 0, PPV_NO_WAY_OUT, PPV_WRESTLEMANIA, PPV_BACKLASH,
+       PPV_JUDGMENT_DAY, PPV_KING_OF_THE_RING, PPV_FULLY_LOADED, PPV_SUMMERSLAM,
+       PPV_UNFORGIVEN, PPV_NO_MERCY, PPV_SURVIVOR_SERIES, PPV_ARMAGEDDON };
+
+#define U_HOT_FEUD       70   /* weekly TV: a feud this hot may be a Cage or No DQ match */
+#define U_NEAR_MAX_FEUD  85   /* Judgment Day: a champion's feud this hot is an Ironman */
+#define U_TITLE_HARDCORE 4    /* (game belt order) Hardcore title matches are No DQ */
+
+static int heat_of(const Universe *u, uint8_t a, uint8_t b)
 {
-    uint32_t roll = u_rand(b->u, 100);
-    if (b->s->kind != U_SHOW_PPV) {
-        if (r->intensity < 50) return U_STIP_NORMAL;
-        return roll < 12 ? U_STIP_CAGE : roll < 24 ? U_STIP_NODQ : U_STIP_NORMAL;
-    }
-    if (r->intensity >= 70) {
-        if (title_match)
-            return roll < 30 ? U_STIP_LADDER : roll < 55 ? U_STIP_IRONMAN
-                 : roll < 75 ? U_STIP_CAGE : roll < 90 ? U_STIP_NODQ : U_STIP_NORMAL;
-        return roll < 35 ? U_STIP_CAGE : roll < 70 ? U_STIP_NODQ
-             : roll < 85 ? U_STIP_IRONMAN : U_STIP_NORMAL;
-    }
-    return roll < 25 ? U_STIP_NODQ : U_STIP_NORMAL;
+    int r = find_rivalry(u, a, b);
+    return r < 0 ? 0 : u->r[r].intensity;
 }
 
-/* Interim Guest Referee (until rivalries can involve three wrestlers, steps
- * 7-8): a PPV feud match without another stipulation sometimes gets the
- * best-ranked free wrestler as its referee - never a champion (they defend)
- * or someone whose own feud is still to be booked. */
-static void maybe_referee(Booker *b, UMatch *m, const uint8_t *rank, int n)
+/* how hot the feud in a match is: the hottest rivalry across the ring */
+static int match_heat(const Universe *u, const UMatch *m)
 {
-    int j, k;
-    if (!m || b->s->kind != U_SHOW_PPV || m->stip != U_STIP_NORMAL ||
-        !u_stip_supported(m->format, U_STIP_REFEREE) || u_rand(b->u, 100) >= 30)
-        return;
-    for (j = 0; j < n; j++) {
-        uint8_t id = rank[j];
-        int champ = is_singles_champion(b->u, id);
-        for (k = 0; k < b->u->n_teams && !champ; k++)
-            champ = is_tag_champion(b->u, (uint8_t)k) &&
-                    (b->u->tm[k].a == id || b->u->tm[k].b == id);
-        if (!b->used[id] && !champ && best_open_rivalry(b, id) < 0) {
-            m->stip = U_STIP_REFEREE;
-            m->referee = id;
-            b->used[id] = 1;
-            return;
+    int x, y, i, j, h = 0, n = u_match_sides(m);
+    if (m->format == U_FMT_RUMBLE) return 0;
+    for (x = 0; x < n; x++)
+        for (y = x + 1; y < n; y++)
+            for (i = 0; i < 2; i++)
+                for (j = 0; j < 2; j++) {
+                    uint8_t a = m->side[x][i], b = m->side[y][j];
+                    int v;
+                    if (a == U_NONE || b == U_NONE) continue;
+                    v = heat_of(u, a, b);
+                    if (v > h) h = v;
+                }
+    return h;
+}
+
+/* Guest Referee: a free wrestler who is a rival of every wrestler in the
+ * match (the hottest such); U_NONE if nobody */
+static uint8_t referee_for(const Booker *b, const UMatch *m)
+{
+    const Universe *u = b->u;
+    int i, k, best = 0;
+    uint8_t who = U_NONE;
+    for (i = 0; i < u->n_wrestlers; i++) {
+        int low = 101;
+        if (b->used[i]) continue;
+        for (k = 0; k < 6 && low; k++) {
+            uint8_t id = m->side[k / 2][k % 2];
+            int h;
+            if (id == U_NONE) continue;
+            h = heat_of(u, (uint8_t)i, id);
+            if (h < low) low = h;
         }
+        if (low && low < 101 && low > best) { best = low; who = (uint8_t)i; }
+    }
+    return who;
+}
+
+static int can_stip(const UMatch *m, uint8_t stip)
+{
+    return m->stip == U_STIP_NORMAL && !m->kotr && m->format != U_FMT_RUMBLE &&
+           u_stip_supported(m->format, stip);
+}
+
+/* Stipulations, once the card is booked:
+ *   weekly TV  a hot feud (70+) is sometimes a Cage (1 on 1) or No DQ match
+ *   No Way Out  Cage for the hottest rivalry, 50%
+ *   WrestleMania  a Ladder match for a title (not the World title)
+ *   Backlash, Fully Loaded, No Mercy, Armageddon  a Cage, 1 show in 5
+ *   Judgment Day  Ironman for a champion in a near-max (90+) feud
+ *   SummerSlam  Ladder for the hottest rivalry, 50%
+ *   any PPV    Guest Referee when a third wrestler is a rival of everyone
+ *              in the match (50%); that wrestler referees
+ * Hardcore title matches are No DQ (booked so). */
+static void stipulations(Booker *b)
+{
+    Universe *u = b->u;
+    UShow *s = b->s;
+    int i, ppv = s->kind == U_SHOW_PPV ? u_ppv_index(u) : -1;
+    int hot = -1, hot_single = -1;
+    for (i = 0; i < s->count; i++) {
+        const UMatch *m = &s->m[i];
+        int h = match_heat(u, m);
+        if (!h || m->kotr) continue;
+        if (hot < 0 || h > match_heat(u, &s->m[hot])) hot = i;
+        if (m->format == U_FMT_SINGLE && (hot_single < 0 || h > match_heat(u, &s->m[hot_single])))
+            hot_single = i;
+    }
+    if (ppv < 0) {
+        for (i = 0; i < s->count; i++) {
+            UMatch *m = &s->m[i];
+            uint32_t roll;
+            if (match_heat(u, m) < U_HOT_FEUD) continue;
+            roll = u_rand(u, 100);
+            if (roll < 10 && can_stip(m, U_STIP_CAGE)) m->stip = U_STIP_CAGE;
+            else if (roll < 20 && can_stip(m, U_STIP_NODQ)) m->stip = U_STIP_NODQ;
+        }
+        return;
+    }
+    switch (ppv) {
+    case PPV_NO_WAY_OUT:
+        if (hot >= 0 && can_stip(&s->m[hot], U_STIP_CAGE) && u_rand(u, 100) < 50)
+            s->m[hot].stip = U_STIP_CAGE;
+        break;
+    case PPV_SUMMERSLAM:
+        if (hot >= 0 && can_stip(&s->m[hot], U_STIP_LADDER) && u_rand(u, 100) < 50)
+            s->m[hot].stip = U_STIP_LADDER;
+        break;
+    case PPV_BACKLASH: case PPV_FULLY_LOADED: case PPV_NO_MERCY: case PPV_ARMAGEDDON:
+        if (hot_single >= 0 && can_stip(&s->m[hot_single], U_STIP_CAGE) && u_rand(u, 100) < 20)
+            s->m[hot_single].stip = U_STIP_CAGE;
+        break;
+    case PPV_JUDGMENT_DAY:
+        for (i = 0; i < s->count; i++)
+            if (s->m[i].title != U_NONE && match_heat(u, &s->m[i]) >= U_NEAR_MAX_FEUD &&
+                can_stip(&s->m[i], U_STIP_IRONMAN))
+                s->m[i].stip = U_STIP_IRONMAN;
+        break;
+    case PPV_WRESTLEMANIA: {
+        int pick = -1;
+        for (i = 0; i < s->count; i++) {     /* (the women's title only if nothing else) */
+            const UMatch *m = &s->m[i];
+            int women = 0, pw;
+            if (m->title == U_NONE || m->title == 0 || !can_stip(m, U_STIP_LADDER)) continue;
+            women = u->t[m->title].kind == U_TITLE_SINGLES && u->t[m->title].division == U_DIV_WOMEN;
+            pw = pick >= 0 && u->t[s->m[pick].title].kind == U_TITLE_SINGLES &&
+                 u->t[s->m[pick].title].division == U_DIV_WOMEN;
+            if (pick < 0 || (pw && !women) ||
+                (pw == women && match_heat(u, m) > match_heat(u, &s->m[pick])))
+                pick = i;
+        }
+        if (pick >= 0) s->m[pick].stip = U_STIP_LADDER;
+        break;
+    }
+    default:
+        break;
+    }
+    for (i = 0; i < s->count; i++) {                      /* Guest Referee */
+        UMatch *m = &s->m[i];
+        uint8_t c;
+        if (!can_stip(m, U_STIP_REFEREE) || !match_heat(u, m)) continue;
+        if ((c = referee_for(b, m)) == U_NONE || u_rand(u, 100) >= 50) continue;
+        m->stip = U_STIP_REFEREE;
+        m->referee = c;
+        b->used[c] = 1;
     }
 }
 
-/*
- * Booking priorities:
- *   1. Singles titles. PPV: every title is defended. Weekly TV: a title
- *      match 1 time in 3, otherwise the champion faces the contender in a
- *      non-title match to build towards the PPV. Vacant titles are fought
- *      over by the top two contenders.
- *   2. Tag titles, the same way.
- *   3. Active rivalries, hottest first (PPV feuds get stipulations).
- *   4. One extra tag match if two more teams are free.
- *   5. Everyone else paired by ranking, preferring face vs heel.
- * The first match booked is the most important, so the card is reversed
- * at the end to put it last (main event).
- */
 /* A weekly title defence gets likelier the longer the title has gone
- * without one (the World title most of all); PPVs defend every title. */
-static int title_due(Universe *u, uint8_t t, int ppv)
+ * without one; Raw leans to the World title, SmackDown to the others (a
+ * tilt). PPVs defend every title. */
+static int title_due(Universe *u, uint8_t t, int ppv, uint8_t brand)
 {
     const UTitle *ti = &u->t[t];
     int weeks = u->week > ti->last_week ? u->week - ti->last_week : 0;
     int chance = clamp(15 + 15 * weeks, 15, 85) + (t == 0 ? 10 : 0);
+    if (brand == U_BRAND_RAW) chance += t == 0 ? 10 : -5;
+    if (brand == U_BRAND_SMACKDOWN) chance += t == 0 ? -10 : 10;
     return ppv || (int)u_rand(u, 100) < chance;
 }
 
@@ -1066,17 +1198,18 @@ static int free_contender(const Booker *b, const uint8_t *con, int n)
 }
 
 /* How big a match is: the card runs from the least to the most important
- * (the main event last). The World title first, then the Royal Rumble's own
- * main event, the tag and secondary titles, hot feuds by their heat and
- * star power, the
- * rest by the wrestlers' ability. */
-static int prominence(const Universe *u, const UMatch *m)
+ * (the main event last). The Royal Rumble, the World title, the tag and
+ * secondary titles, feuds by heat and star power, the rest by ability.
+ * Raw leans to big feuds, SmackDown to secondary titles and tag matches. */
+static int prominence(const Universe *u, const UMatch *m, uint8_t brand)
 {
-    int k, sum = 0, cnt = 0;
+    int k, sum = 0, cnt = 0, p;
+    int tilt_sd = brand == U_BRAND_SMACKDOWN ? 40 : 0;
     if (m->format == U_FMT_RUMBLE) return 1000;
     if (m->title == 0) return 500;
     if (m->title != U_NONE)
-        return u->t[m->title].kind == U_TITLE_TAG ? 220 : clamp(270 - 20 * m->title, 100, 250);
+        return (u->t[m->title].kind == U_TITLE_TAG ? 220 : clamp(270 - 20 * m->title, 100, 250))
+               + tilt_sd;
     for (k = 0; k < 6; k++)
         if (m->side[k / 2][k % 2] != U_NONE) {
             const UWrestler *w = &u->w[m->side[k / 2][k % 2]];
@@ -1084,8 +1217,12 @@ static int prominence(const Universe *u, const UMatch *m)
             cnt++;
         }
     if (cnt) sum /= cnt;
-    /* feuds by heat, then star power (the biggest names' feud main-events) */
-    if (m->rivalry != U_NONE) return 30 + 2 * u->r[m->rivalry].intensity + sum;
+    if (m->rivalry != U_NONE || m->why == U_WHY_RIVALRY) {
+        /* feuds by heat, then star power (the biggest names' feud main-events) */
+        p = 30 + 2 * match_heat(u, m) + sum;
+        return p + (brand == U_BRAND_RAW ? 20 : 0);
+    }
+    if (m->format == U_FMT_TAG) sum += tilt_sd;
     return sum;
 }
 
@@ -1126,21 +1263,390 @@ static void one_persona(Booker *b)
     }
 }
 
+/* a makeshift tag match (Survivor Series): no team ids */
+static UMatch *book_pairs(Booker *b, uint8_t a1, uint8_t a2, uint8_t b1, uint8_t b2)
+{
+    UMatch *m = new_match(b, U_FMT_TAG, U_NONE, U_STIP_NORMAL);
+    if (!m) return 0;
+    m->side[0][0] = a1; m->side[0][1] = a2;
+    m->side[1][0] = b1; m->side[1][1] = b2;
+    b->used[a1] = b->used[a2] = b->used[b1] = b->used[b2] = 1;
+    return m;
+}
+
+static int pairs_allied(const Universe *u, uint8_t a1, uint8_t a2, uint8_t b1, uint8_t b2)
+{
+    return allies(u, a1, b1) || allies(u, a1, b2) || allies(u, a2, b1) || allies(u, a2, b2);
+}
+
+/* his partner for a makeshift team: the free regular of his gender he is
+ * closest to (any ally level), not a rival of his; U_NONE if none */
+static uint8_t partner_for(const Booker *b, uint8_t id, uint8_t against)
+{
+    const Universe *u = b->u;
+    int i, best = 0;
+    uint8_t who = U_NONE;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        uint8_t o;
+        if (!x->level || (x->a != id && x->b != id)) continue;
+        o = x->a == id ? x->b : x->a;
+        if (b->used[o] || o == against || u->w[o].gender != u->w[id].gender ||
+            find_rivalry(u, o, id) >= 0)
+            continue;
+        if (x->level > best) { best = x->level; who = o; }
+    }
+    return who;
+}
+
+/* Survivor Series: a card of regular 2-on-2 tag matches (no elimination),
+ * rival teams against each other: tag teams whose members feud, then feuds
+ * fought with each side's closest ally, then the other teams, then free
+ * wrestlers paired up, faces against heels */
+static void book_survivor(Booker *b, const uint8_t *men, int nm, const uint8_t *women, int nw,
+                          const uint8_t *trank, int nt)
+{
+    Universe *u = b->u;
+    int i, j, g;
+    for (;;) {                                            /* rival tag teams */
+        int bx = -1, by = -1, bh = 0;
+        for (i = 0; i < nt; i++)
+            for (j = i + 1; j < nt; j++) {
+                const UTeam *x = &u->tm[trank[i]], *y = &u->tm[trank[j]];
+                int h = 0, k;
+                uint8_t ma[2] = {x->a, x->b}, mb[2] = {y->a, y->b};
+                if (!team_free(b, trank[i]) || !team_free(b, trank[j]) ||
+                    teams_allied(u, trank[i], trank[j]))
+                    continue;
+                for (k = 0; k < 4; k++) {
+                    int v = heat_of(u, ma[k / 2], mb[k % 2]);
+                    if (v > h) h = v;
+                }
+                if (h > bh) { bh = h; bx = i; by = j; }
+            }
+        if (bx < 0 || b->s->count >= b->max) break;
+        book_tag(b, trank[bx], trank[by], U_NONE, U_STIP_NORMAL);
+        b->s->m[b->s->count - 1].why = U_WHY_RIVALRY;
+    }
+    {                                                     /* feuds, with allies */
+        uint8_t tried[U_MAX_RIVALRIES];
+        u_zero(tried, sizeof tried);
+        while (b->s->count < b->max) {
+            int ri = -1;
+            uint8_t a, c, pa, pc;
+            UMatch *m;
+            for (i = 0; i < U_MAX_RIVALRIES; i++) {       /* the hottest not tried */
+                const URivalry *r = &u->r[i];
+                if (!r->intensity || tried[i] || b->used[r->a] || b->used[r->b] ||
+                    u->w[r->a].gender != u->w[r->b].gender ||
+                    (u->w[r->a].gender == U_FEMALE && women_matches(b) >= U_WOMEN_MATCHES))
+                    continue;
+                if (ri < 0 || r->intensity > u->r[ri].intensity) ri = i;
+            }
+            if (ri < 0) break;
+            tried[ri] = 1;
+            a = u->r[ri].a;
+            c = u->r[ri].b;
+            pa = partner_for(b, a, c);
+            if (pa == U_NONE) continue;
+            b->used[pa] = 1;                              /* (not his partner too) */
+            pc = partner_for(b, c, a);
+            b->used[pa] = 0;
+            if (pc == U_NONE || pairs_allied(u, a, pa, c, pc)) continue;
+            if ((m = book_pairs(b, a, pa, c, pc)) != 0) {
+                m->rivalry = (uint8_t)ri;
+                m->why = U_WHY_RIVALRY;
+            }
+        }
+    }
+    for (i = 0; i < nt && b->s->count < b->max; i++) {    /* the other teams */
+        if (!team_free(b, trank[i])) continue;
+        for (j = i + 1; j < nt; j++)
+            if (team_free(b, trank[j]) && !teams_allied(u, trank[i], trank[j])) {
+                book_tag(b, trank[i], trank[j], U_NONE, U_STIP_NORMAL);
+                break;
+            }
+    }
+    for (g = 0; g < 2; g++) {                             /* faces vs heels */
+        const uint8_t *rank = g ? women : men;
+        int n = g ? nw : nm;
+        while (b->s->count < b->max && (!g || women_matches(b) < U_WOMEN_MATCHES)) {
+            uint8_t f[2], h[2];
+            int nf = 0, nh = 0;
+            for (i = 0; i < n && (nf < 2 || nh < 2); i++) {
+                uint8_t id = rank[i];
+                if (b->used[id]) continue;
+                if (u->w[id].align == U_FACE && nf < 2) f[nf++] = id;
+                else if (u->w[id].align == U_HEEL && nh < 2) h[nh++] = id;
+            }
+            if (nf < 2 || nh < 2 || pairs_allied(u, f[0], f[1], h[0], h[1])) break;
+            book_pairs(b, f[0], f[1], h[0], h[1]);
+        }
+    }
+}
+
+/* Weekly TV: now and then a No. 1 Contender Match - No. 2 vs No. 3 of a
+ * title's contenders (the winner becomes No. 1) - for a title not on the
+ * card */
+static void book_no1_match(Booker *b)
+{
+    Universe *u = b->u;
+    uint8_t cand[U_MAX_TITLES], con[U_MAX_WRESTLERS];
+    int nc = 0, t, i, n;
+    if (u_rand(u, 100) >= 35 || b->s->count >= b->max) return;
+    for (t = 0; t < u->n_titles; t++) {
+        int on = 0;
+        if (!u->t[t].active) continue;
+        for (i = 0; i < b->s->count; i++) on |= b->s->m[i].title == t;
+        n = u_contenders(u, (uint8_t)t, con, 3);
+        if (on || n < 3) continue;
+        if (u->t[t].kind == U_TITLE_TAG) {
+            if (!team_free(b, con[1]) || !team_free(b, con[2]) || teams_allied(u, con[1], con[2]) ||
+                is_tag_champion(u, con[1]) || is_tag_champion(u, con[2]))
+                continue;
+        } else if (b->used[con[1]] || b->used[con[2]] || allies(u, con[1], con[2]) ||
+                   is_singles_champion(u, con[1]) || is_singles_champion(u, con[2]) ||
+                   (u->w[con[1]].gender == U_FEMALE && women_matches(b) >= U_WOMEN_MATCHES)) {
+            continue;
+        }
+        cand[nc++] = (uint8_t)t;
+    }
+    if (!nc) return;
+    t = cand[u_rand(u, (uint32_t)nc)];
+    u_contenders(u, (uint8_t)t, con, 3);
+    if (u->t[t].kind == U_TITLE_TAG) book_tag(b, con[1], con[2], U_NONE, U_STIP_NORMAL);
+    else book_singles(b, con[1], con[2], U_NONE, U_NONE, U_STIP_NORMAL);
+    b->s->m[b->s->count - 1].why = U_WHY_NO1_MATCH;
+    b->s->m[b->s->count - 1].why_title = (uint8_t)t;
+}
+
+/* A feud on the card: a three-way feud (a third wrestler feuding with
+ * both) is sometimes a Triple Threat; tag team members' feuds are sometimes
+ * fought team against team; otherwise one on one */
+static void book_feud(Booker *b, int ri)
+{
+    Universe *u = b->u;
+    uint8_t a = u->r[ri].a, c = u->r[ri].b, third = U_NONE;
+    int ppv = b->s->kind == U_SHOW_PPV, i, ta = -1, tc = -1, best = 0;
+    UMatch *m;
+    for (i = 0; i < u->n_wrestlers; i++) {                /* a three-way feud? */
+        int h1, h2;
+        if (b->used[i] || i == a || i == c) continue;
+        h1 = heat_of(u, (uint8_t)i, a);
+        h2 = heat_of(u, (uint8_t)i, c);
+        if (h1 && h2 && (h1 < h2 ? h1 : h2) > best) { best = h1 < h2 ? h1 : h2; third = (uint8_t)i; }
+    }
+    if (third != U_NONE && (int)u_rand(u, 100) < (ppv ? 40 : 30)) {
+        book_triple(b, a, c, third, U_NONE, U_STIP_NORMAL);
+        if ((m = &b->s->m[b->s->count - 1])->format == U_FMT_TRIPLE) {
+            m->rivalry = (uint8_t)ri;
+            m->why = U_WHY_RIVALRY;
+        }
+        return;
+    }
+    for (i = 0; i < u->n_teams; i++) {                    /* team against team? */
+        if (!team_free(b, (uint8_t)i)) continue;
+        if (u->tm[i].a == a || u->tm[i].b == a) ta = i;
+        if (u->tm[i].a == c || u->tm[i].b == c) tc = i;
+    }
+    if (ta >= 0 && tc >= 0 && ta != tc && !teams_allied(u, (uint8_t)ta, (uint8_t)tc) &&
+        u_rand(u, 100) < 50) {
+        book_tag(b, (uint8_t)ta, (uint8_t)tc, U_NONE, U_STIP_NORMAL);
+        m = &b->s->m[b->s->count - 1];
+        m->rivalry = (uint8_t)ri;
+        m->why = U_WHY_RIVALRY;
+        return;
+    }
+    if ((m = book_singles(b, a, c, U_NONE, (uint8_t)ri, U_STIP_NORMAL)) != 0) m->why = U_WHY_RIVALRY;
+}
+
+/* Unforgiven's Handicap match: the hottest free feud where one side brings
+ * a close ally (two on one), else the best of three free men alone against
+ * the other two */
+static void book_unforgiven_handicap(Booker *b, const uint8_t *men, int nm)
+{
+    Universe *u = b->u;
+    uint8_t tried[U_MAX_RIVALRIES];
+    int i, j, k;
+    u_zero(tried, sizeof tried);
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        int ri = -1;
+        for (k = 0; k < U_MAX_RIVALRIES; k++) {           /* hottest first */
+            const URivalry *r = &u->r[k];
+            if (!r->intensity || tried[k] || b->used[r->a] || b->used[r->b] ||
+                u->w[r->a].gender != U_MALE || u->w[r->b].gender != U_MALE)
+                continue;
+            if (ri < 0 || r->intensity > u->r[ri].intensity) ri = k;
+        }
+        if (ri < 0) break;
+        tried[ri] = 1;
+        for (k = 0; k < 2; k++) {                         /* one side brings his ally */
+            uint8_t x = k ? u->r[ri].b : u->r[ri].a, y = k ? u->r[ri].a : u->r[ri].b;
+            uint8_t ally = partner_for(b, x, y);
+            if (ally == U_NONE || u->w[ally].role != U_ROLE_REGULAR ||
+                u_ally_level(u, x, ally) < U_ALLY_CLOSE || allies(u, ally, y))
+                continue;
+            book_handicap(b, y, x, ally, U_STIP_NORMAL);
+            b->s->m[b->s->count - 1].rivalry = (uint8_t)ri;
+            b->s->m[b->s->count - 1].why = U_WHY_RIVALRY;
+            return;
+        }
+    }
+    {
+        uint8_t f[3];
+        int nf = 0;
+        for (j = 0; j < nm && nf < 3; j++) {
+            if (b->used[men[j]]) continue;
+            for (k = 0; k < nf && !allies(u, f[k], men[j]); k++) {}
+            if (k == nf) f[nf++] = men[j];
+        }
+        if (nf == 3) book_handicap(b, f[0], f[1], f[2], U_STIP_NORMAL);
+    }
+}
+
+/* A singles title's match for this show (U_WHY_* set) */
+static void book_singles_title(Booker *b, int t, int *women_booked)
+{
+    Universe *u = b->u;
+    UTitle *ti = &u->t[t];
+    uint8_t h = u_title_holder(u, (uint8_t)t), con[U_MAX_WRESTLERS];
+    int ppv = b->s->kind == U_SHOW_PPV ? u_ppv_index(u) : -1;
+    int nc = u_contenders(u, (uint8_t)t, con, U_MAX_WRESTLERS), ri = -1, k;
+    uint8_t stip = t == U_TITLE_HARDCORE ? U_STIP_NODQ : U_STIP_NORMAL;
+    UMatch *m = 0;
+    if (h == U_NONE) {                                    /* vacant: No. 1 vs No. 2 */
+        int x = free_contender(b, con, nc), y;
+        if (x < 0) return;
+        b->used[x] = 1;
+        y = free_contender(b, con, nc);
+        b->used[x] = 0;
+        if (y >= 0 && (m = book_singles(b, (uint8_t)x, (uint8_t)y, (uint8_t)t, U_NONE, stip)))
+            m->why = U_WHY_VACANT;
+        if (m && ti->division == U_DIV_WOMEN) *women_booked = 1;
+        return;
+    }
+    if (b->used[h]) return;
+    if (t == 0 && ppv == PPV_WRESTLEMANIA && u->rumble_winner < u->n_wrestlers &&
+        u->rumble_winner != h && !b->used[u->rumble_winner]) {
+        /* the World champion against the Royal Rumble winner (sometimes
+         * with the No. 1 contender too: a Triple Threat) */
+        uint8_t rw = u->rumble_winner;
+        int x;
+        b->used[rw] = 1;
+        x = free_contender(b, con, nc);
+        b->used[rw] = 0;
+        if (x >= 0 && u_rand(u, 100) < 35) {
+            book_triple(b, h, rw, (uint8_t)x, 0, stip);
+        } else {
+            ri = find_rivalry(u, h, rw);
+            book_singles(b, h, rw, 0, ri >= 0 ? (uint8_t)ri : U_NONE, stip);
+        }
+        b->s->m[b->s->count - 1].why = U_WHY_RUMBLE_SHOT;
+        return;
+    }
+    if (!title_due(u, (uint8_t)t, ppv >= 0, b->s->brand)) return;
+    for (k = 0; k < U_MAX_RIVALRIES; k++) {               /* a top-5 rival? */
+        const URivalry *r = &u->r[k];
+        uint8_t opp = r->a == h ? r->b : r->a;
+        int top = 0, c;
+        for (c = 0; c < nc && c < U_CONTENDERS; c++) top |= con[c] == opp;
+        if (!r->intensity || (r->a != h && r->b != h) || b->used[opp] ||
+            is_singles_champion(u, opp) || !top || rested(b, r))
+            continue;
+        if (ri < 0 || r->intensity > u->r[ri].intensity) ri = k;
+    }
+    if (t == 0 && ppv == PPV_UNFORGIVEN) {               /* a Triple Threat World title match */
+        int x, y;
+        x = ri >= 0 ? (u->r[ri].a == h ? u->r[ri].b : u->r[ri].a) : free_contender(b, con, nc);
+        if (x >= 0) {
+            b->used[x] = 1;
+            y = free_contender(b, con, nc);
+            b->used[x] = 0;
+            if (y >= 0) {
+                book_triple(b, h, (uint8_t)x, (uint8_t)y, 0, stip);
+                b->s->m[b->s->count - 1].why = U_WHY_CONTENDERS;
+                return;
+            }
+        }
+    }
+    if (ri >= 0) {
+        uint8_t opp = u->r[ri].a == h ? u->r[ri].b : u->r[ri].a;
+        if ((m = book_singles(b, h, opp, (uint8_t)t, (uint8_t)ri, stip)) != 0) m->why = U_WHY_TITLE_RIVAL;
+    } else {
+        int c = free_contender(b, con, nc);
+        if (c < 0) return;
+        if ((m = book_singles(b, h, (uint8_t)c, (uint8_t)t, U_NONE, stip)) != 0) m->why = U_WHY_NO1;
+    }
+    if (m && ti->division == U_DIV_WOMEN) *women_booked = 1;
+}
+
+/* A tag title's match: the champions against a top-5 rival team or the
+ * No. 1 contenders; vacant: No. 1 vs No. 2 */
+static void book_tag_title(Booker *b, int t)
+{
+    Universe *u = b->u;
+    uint8_t h = u_title_holder(u, (uint8_t)t), con[U_MAX_TEAMS];
+    int n = u_contenders(u, (uint8_t)t, con, U_MAX_TEAMS), i, x = -1, y = -1, bh = 0;
+    uint8_t why = U_WHY_NO1;
+    if (h != U_NONE && (!team_free(b, h) || !title_due(u, (uint8_t)t, b->s->kind == U_SHOW_PPV,
+                                                       b->s->brand)))
+        return;
+    if (h != U_NONE) {
+        const UTeam *c = &u->tm[h];
+        x = h;
+        for (i = 0; i < n && i < U_CONTENDERS; i++) {     /* a rival team in the top 5? */
+            const UTeam *o = &u->tm[con[i]];
+            int v = heat_of(u, c->a, o->a), w;
+            if ((w = heat_of(u, c->a, o->b)) > v) v = w;
+            if ((w = heat_of(u, c->b, o->a)) > v) v = w;
+            if ((w = heat_of(u, c->b, o->b)) > v) v = w;
+            if (v > bh && team_free(b, con[i]) && !teams_allied(u, h, con[i])) { bh = v; y = con[i]; }
+        }
+        if (y >= 0) why = U_WHY_TITLE_RIVAL;
+    } else {
+        why = U_WHY_VACANT;
+    }
+    for (i = 0; i < n && y < 0; i++) {
+        if (!team_free(b, con[i]) || con[i] == x || (x >= 0 && teams_allied(u, (uint8_t)x, con[i])))
+            continue;
+        if (x < 0) x = con[i];
+        else y = con[i];
+    }
+    if (x < 0 || y < 0) return;
+    book_tag(b, (uint8_t)x, (uint8_t)y, (uint8_t)t, U_STIP_NORMAL);
+    b->s->m[b->s->count - 1].why = why;
+}
+
+/*
+ * A show's card (notes/universe-plan.md, Booking rules):
+ *   Royal Rumble   the Rumble + title defences + ONE feud
+ *   King of the Ring  the tournament + ONE title defence + ONE feud
+ *   Survivor Series  2-on-2 tag matches + ONE title match (the World title)
+ *   WrestleMania   biggest card; World champion vs the Rumble winner
+ *   Unforgiven     Triple Threat World title + a Handicap match
+ *   other PPVs     every title, then feuds, then the rankings
+ *   weekly TV      titles when due, debuts, feuds (Raw 4, SmackDown 3), the
+ *                  women's match, maybe a No. 1 Contender Match, a tag match
+ *                  (SmackDown sometimes two), sometimes a Triple Threat or a
+ *                  Handicap, then the rankings
+ * then the stipulations (stipulations()) and the card order (prominence()).
+ */
 void u_book_show(Universe *u, UShow *s)
 {
     Booker b;
     uint8_t men[U_MAX_WRESTLERS], women[U_MAX_WRESTLERS];
     uint8_t trank[U_MAX_TEAMS];
-    int nm, nw, nt, i, j, t, ppv, women_booked = 0;
+    int nm, nw, nt, i, j, t, ppv, pi, women_booked = 0, feuds;
 
     u_zero(s, sizeof *s);
     s->team_formed = s->team_split = U_NONE;
     s->week = u->week;
     u_next_show(u, &s->kind, &s->brand);   /* (Raw / SmackDown: names only) */
     ppv = s->kind == U_SHOW_PPV;
+    pi = ppv ? u_ppv_index(u) : -1;
     b.u = u;
     b.s = s;
-    b.max = ppv ? U_PPV_MATCHES : U_WEEKLY_MATCHES;
+    b.max = pi == PPV_WRESTLEMANIA ? U_PPV_MATCHES + 2 : ppv ? U_PPV_MATCHES : U_WEEKLY_MATCHES;
     for (i = 0; i < U_MAX_WRESTLERS; i++) {
         const UWrestler *w = &u->w[i];
         b.used[i] = (uint8_t)(i >= u->n_wrestlers || !w->active ||
@@ -1151,168 +1657,108 @@ void u_book_show(Universe *u, UShow *s)
     nw = u_division_rankings(u, U_DIV_WOMEN, women, U_MAX_WRESTLERS);
     nt = u_team_rankings(u, U_NONE, trank, U_MAX_TEAMS);
 
-    /* The Royal Rumble PPV's main event (booked first: the card is
-     * reversed at the end). Its entrants may also wrestle earlier. */
-    if (ppv && u_ppv_index(u) == 0) book_rumble(&b, men, nm);
+    /* The Royal Rumble PPV's main event. Its entrants may also wrestle
+     * earlier. */
+    if (pi == PPV_ROYAL_RUMBLE) book_rumble(&b, men, nm);
 
-    if (ppv && u_ppv_index(u) == 5) {                    /* King of the Ring */
+    if (pi == PPV_KING_OF_THE_RING) {
         b.max = U_MAX_MATCHES;
         book_kotr(&b, men, nm);
+        stipulations(&b);                                 /* (a Guest Referee maybe) */
         return;                                           /* (already in card order) */
     }
 
-    /* Singles titles, World first (it gets the most main events) */
-    for (t = 0; t < u->n_titles; t++) {
-        UTitle *ti = &u->t[t];
-        uint8_t h = u_title_holder(u, (uint8_t)t);
-        uint8_t con[U_MAX_WRESTLERS];                     /* the title's contenders */
-        int nc;
-        uint8_t stip = t == 4 ? U_STIP_NODQ : U_STIP_NORMAL;   /* Hardcore: No DQ */
-        if (!ti->active || ti->kind != U_TITLE_SINGLES) continue;
-        nc = u_contenders(u, (uint8_t)t, con, U_MAX_WRESTLERS);
-        if (h == U_NONE) {                                /* vacant: #1 vs #2 */
-            int x = free_contender(&b, con, nc), y;
-            if (x < 0) continue;
-            b.used[x] = 1;
-            y = free_contender(&b, con, nc);
-            b.used[x] = 0;
-            if (y >= 0) book_singles(&b, (uint8_t)x, (uint8_t)y, (uint8_t)t, U_NONE,
-                                     ppv ? U_STIP_LADDER : stip);
-            if (ti->division == U_DIV_WOMEN && y >= 0) women_booked = 1;
-            continue;
+    /* Titles: singles titles (the World title first), then tag titles - a
+     * double champion defends his singles title. Survivor Series: only the
+     * World title. */
+    for (j = 0; j < 2; j++)
+        for (t = 0; t < u->n_titles; t++) {
+            if (!u->t[t].active || (pi == PPV_SURVIVOR_SERIES && t != 0)) continue;
+            if (j == 0 && u->t[t].kind == U_TITLE_SINGLES) book_singles_title(&b, t, &women_booked);
+            if (j == 1 && u->t[t].kind == U_TITLE_TAG) book_tag_title(&b, t);
         }
-        if (b.used[h]) continue;
-        /* WrestleMania: the World champion faces the Royal Rumble winner */
-        if (ppv && t == 0 && u_ppv_index(u) == 2 && u->rumble_winner < u->n_wrestlers &&
-            u->rumble_winner != h && !b.used[u->rumble_winner]) {
-            int ri = find_rivalry(u, h, u->rumble_winner);
-            book_singles(&b, h, u->rumble_winner, (uint8_t)t,
-                         ri >= 0 ? (uint8_t)ri : U_NONE, U_STIP_NORMAL);
-            continue;
-        }
-        if (!title_due(u, (uint8_t)t, ppv)) continue;  /* (his feud may still be booked) */
-        {
-            /* the champion's hottest feud with a top-5 contender (unless
-             * the rival holds a singles title too), else the #1 contender */
-            int ri = -1, k;
-            for (k = 0; k < U_MAX_RIVALRIES; k++) {
-                const URivalry *r = &u->r[k];
-                uint8_t opp = r->a == h ? r->b : r->a;
-                int top = 0, c;
-                for (c = 0; c < nc && c < U_CONTENDERS; c++) top |= con[c] == opp;
-                if (!r->intensity || (r->a != h && r->b != h) || b.used[opp] ||
-                    is_singles_champion(u, opp) || !top || rested(&b, r))
+
+    if (pi == PPV_SURVIVOR_SERIES) {
+        book_survivor(&b, men, nm, women, nw, trank, nt);
+    } else {
+        if (pi == PPV_UNFORGIVEN) book_unforgiven_handicap(&b, men, nm);
+
+        /* a new team's debut: against the free team closest in the ranking */
+        for (t = 0; t < u->n_teams && s->count < b.max && pi != PPV_ROYAL_RUMBLE; t++) {
+            int at = -1, pick = -1;
+            if (!u->tm[t].debut || !team_free(&b, (uint8_t)t)) continue;
+            for (j = 0; j < nt; j++) if (trank[j] == t) at = j;
+            for (j = 0; j < nt; j++) {
+                if (trank[j] == t || !team_free(&b, trank[j]) || is_tag_champion(u, trank[j]) ||
+                    teams_allied(u, (uint8_t)t, trank[j]))
                     continue;
-                if (ri < 0 || r->intensity > u->r[ri].intensity) ri = k;
+                if (pick < 0 || (at >= 0 && (j > at ? j - at : at - j) <
+                                            (pick > at ? pick - at : at - pick)))
+                    pick = j;
             }
-            if (ri >= 0) {
-                URivalry *r = &u->r[ri];
-                uint8_t opp = r->a == h ? r->b : r->a;
-                uint8_t fs = feud_stip(&b, r, 1);
-                maybe_referee(&b, book_singles(&b, h, opp, (uint8_t)t, (uint8_t)ri,
-                                               fs == U_STIP_NORMAL ? stip : fs), men, nm);
-            } else {
-                int c = free_contender(&b, con, nc);
-                if (c < 0) continue;
-                book_singles(&b, h, (uint8_t)c, (uint8_t)t, U_NONE, stip);
+            if (pick >= 0) {
+                book_tag(&b, (uint8_t)t, trank[pick], U_NONE, U_STIP_NORMAL);
+                s->m[s->count - 1].why = U_WHY_DEBUT;
             }
-            if (ti->division == U_DIV_WOMEN) women_booked = 1;
+        }
+
+        /* feuds, hottest first */
+        feuds = pi == PPV_ROYAL_RUMBLE ? 1 : ppv ? U_MAX_MATCHES
+              : s->brand == U_BRAND_RAW ? U_WEEKLY_FEUDS : U_WEEKLY_FEUDS - 1;
+        for (i = 0; s->count < b.max && i < feuds; i++) {
+            int ri = best_open_rivalry(&b, U_NONE);
+            if (ri < 0) break;
+            if (u->w[u->r[ri].a].gender == U_FEMALE) women_booked = 1;
+            book_feud(&b, ri);
+        }
+
+        if (pi != PPV_ROYAL_RUMBLE) {
+            /* The women's division: a match on every show */
+            if (!women_booked && s->count < b.max)
+                while (book_regular(&b, women, nw) == 0) {}
+
+            if (!ppv) book_no1_match(&b);
+
+            /* the regular tag match(es): the team that has waited longest
+             * vs the closest in the ranking (SmackDown leans to tags) */
+            for (i = 0; i < (s->brand == U_BRAND_SMACKDOWN && u_rand(u, 100) < 50 ? 2 : 1); i++) {
+                int x = -1, y = -1;
+                if (s->count >= b.max) break;
+                for (j = 0; j < nt; j++)
+                    if (team_free(&b, trank[j]) && !is_tag_champion(u, trank[j]) &&
+                        (x < 0 || u->tm[trank[j]].last_show < u->tm[trank[x]].last_show))
+                        x = j;
+                for (j = 0; x >= 0 && j < nt; j++)
+                    if (j != x && team_free(&b, trank[j]) && !is_tag_champion(u, trank[j]) &&
+                        !teams_allied(u, trank[x], trank[j]) &&
+                        (y < 0 || (j > x ? j - x : x - j) < (y > x ? y - x : x - y)))
+                        y = j;
+                if (y >= 0) book_tag(&b, trank[x], trank[y], U_NONE, U_STIP_NORMAL);
+            }
+
+            /* Weekly TV sometimes has a Triple Threat or a Handicap match
+             * among wrestlers still free (nearby in the rankings) */
+            if (!ppv && s->count < b.max) {
+                uint8_t f[3];
+                int nf = 0, roll = (int)u_rand(u, 100);
+                for (i = 0; i < nm && nf < 3; i++) {
+                    if (b.used[men[i]]) continue;
+                    for (j = 0; j < nf && !allies(u, f[j], men[i]); j++) {}
+                    if (j == nf) f[nf++] = men[i];
+                }
+                if (nf == 3 && roll < 30) book_triple(&b, f[0], f[1], f[2], U_NONE, U_STIP_NORMAL);
+                else if (nf == 3 && roll < 50) book_handicap(&b, f[0], f[1], f[2], U_STIP_NORMAL);
+            }
+
+            while (s->count < b.max && book_regular(&b, men, nm) >= 0) {}
         }
     }
 
-    for (t = 0; t < u->n_titles; t++) {
-        UTitle *ti = &u->t[t];
-        uint8_t h = u_title_holder(u, (uint8_t)t);
-        int x = -1, y = -1;
-        if (!ti->active || ti->kind != U_TITLE_TAG) continue;
-        if (h != U_NONE && !team_free(&b, h)) continue;
-        if (h != U_NONE && !title_due(u, (uint8_t)t, ppv)) continue;
-        if (h != U_NONE) x = h;
-        for (j = 0; j < nt; j++) {
-            if (!team_free(&b, trank[j]) || trank[j] == x) continue;
-            if (x < 0) x = trank[j];
-            else { y = trank[j]; break; }
-        }
-        if (x < 0 || y < 0) continue;
-        {
-            /* interim (step 8 brings the real rules): PPV tag title
-             * matches sometimes get a stipulation */
-            uint8_t stip = U_STIP_NORMAL;
-            uint32_t roll = u_rand(u, 100);
-            if (h == U_NONE && ppv) stip = U_STIP_LADDER;
-            else if (ppv) stip = roll < 20 ? U_STIP_LADDER : roll < 35 ? U_STIP_IRONMAN
-                               : roll < 50 ? U_STIP_NODQ : U_STIP_NORMAL;
-            book_tag(&b, (uint8_t)x, (uint8_t)y, (uint8_t)t, stip);
-        }
-    }
-
-    /* a new team's debut: against the free team closest in the ranking */
-    for (t = 0; t < u->n_teams && s->count < b.max; t++) {
-        int at = -1, pick = -1;
-        if (!u->tm[t].debut || !team_free(&b, (uint8_t)t)) continue;
-        for (j = 0; j < nt; j++) if (trank[j] == t) at = j;
-        for (j = 0; j < nt; j++) {
-            if (trank[j] == t || !team_free(&b, trank[j]) || is_tag_champion(u, trank[j]) ||
-                teams_allied(u, (uint8_t)t, trank[j]))
-                continue;
-            if (pick < 0 || (at >= 0 && (j > at ? j - at : at - j) <
-                                        (pick > at ? pick - at : at - pick)))
-                pick = j;
-        }
-        if (pick >= 0) book_tag(&b, (uint8_t)t, trank[pick], U_NONE, U_STIP_NORMAL);
-    }
-
-    for (i = 0; s->count < b.max && (ppv || i < U_WEEKLY_FEUDS); i++) {
-        int ri = best_open_rivalry(&b, U_NONE);
-        if (ri < 0) break;
-        if (u->w[u->r[ri].a].gender == U_FEMALE) women_booked = 1;
-        maybe_referee(&b, book_singles(&b, u->r[ri].a, u->r[ri].b, U_NONE, (uint8_t)ri,
-                                       feud_stip(&b, &u->r[ri], 0)), men, nm);
-    }
-
-    /* The women's division: a match on every show */
-    if (!women_booked && s->count < b.max)
-        while (book_regular(&b, women, nw) == 0) {}
-
-    if (s->count < b.max) {      /* one extra tag match per show: the team that */
-        int x = -1, y = -1;      /* has waited longest vs the closest in the ranking */
-        for (i = 0; i < nt; i++)
-            if (team_free(&b, trank[i]) && !is_tag_champion(u, trank[i]) &&
-                (x < 0 || u->tm[trank[i]].last_show < u->tm[trank[x]].last_show))
-                x = i;
-        for (j = 0; x >= 0 && j < nt; j++)
-            if (j != x && team_free(&b, trank[j]) && !is_tag_champion(u, trank[j]) &&
-                !teams_allied(u, trank[x], trank[j]) &&
-                (y < 0 || (j > x ? j - x : x - j) < (y > x ? y - x : x - y)))
-                y = j;
-        if (y >= 0) book_tag(&b, trank[x], trank[y], U_NONE, U_STIP_NORMAL);
-    }
-
-    /* Weekly TV sometimes has a Triple Threat or a Handicap match among
-     * wrestlers still free (nearby in the rankings). */
-    if (!ppv && s->count < b.max) {
-        uint8_t f[3];
-        int nf = 0, roll = (int)u_rand(u, 100);
-        uint8_t stip = u_rand(u, 100) < 15 ? U_STIP_NODQ : U_STIP_NORMAL;  /* interim */
-        for (i = 0; i < nm && nf < 3; i++) {
-            if (b.used[men[i]]) continue;
-            for (j = 0; j < nf && !allies(u, f[j], men[i]); j++) {}
-            if (j == nf) f[nf++] = men[i];
-        }
-        if (nf == 3 && roll < 30) {
-            book_triple(&b, f[0], f[1], f[2], U_NONE, stip);
-        } else if (nf == 3 && roll < 50) {
-            /* the best of the three alone against the other two */
-            book_handicap(&b, f[0], f[1], f[2], stip);
-        }
-    }
-
-    while (s->count < b.max && book_regular(&b, men, nm) >= 0) {}
-
+    stipulations(&b);
     for (i = 1; i < s->count; i++) {      /* stable: least important first */
         UMatch tmp = s->m[i];
-        int p = prominence(u, &tmp);
-        for (j = i; j > 0 && prominence(u, &s->m[j - 1]) > p; j--) s->m[j] = s->m[j - 1];
+        int p = prominence(u, &tmp, s->brand);
+        for (j = i; j > 0 && prominence(u, &s->m[j - 1], s->brand) > p; j--) s->m[j] = s->m[j - 1];
         s->m[j] = tmp;
     }
 }
@@ -1330,7 +1776,7 @@ static int side_rating(const Universe *u, const UMatch *m, int side)
     }
     if (!cnt) return 0;
     sum /= cnt;
-    if (m->format == U_FMT_TAG) {
+    if (m->format == U_FMT_TAG && m->team[side] != U_NONE) {   /* (not a makeshift team) */
         const UTeam *t = &u->tm[m->team[side]];
         sum += clamp((int)t->wins - (int)t->losses, -10, 10);
     }
@@ -1580,7 +2026,7 @@ static void add_momentum(UWrestler *w, int d)
 static int side_score(const Universe *u, const UMatch *m, int side)
 {
     int k, sum = 0, cnt = 0;
-    if (m->format == U_FMT_TAG) return u_team_score(u, m->team[side]);
+    if (m->format == U_FMT_TAG && m->team[side] != U_NONE) return u_team_score(u, m->team[side]);
     for (k = 0; k < 2; k++)
         if (m->side[side][k] != U_NONE) {
             sum += u_score(&u->w[m->side[side][k]]);
@@ -1635,7 +2081,7 @@ static void score(uint16_t *points, int8_t *streak, int delta, int won)
 static int side_points(const Universe *u, const UMatch *m, int side)
 {
     int k, sum = 0, cnt = 0;
-    if (m->format == U_FMT_TAG) return u->tm[m->team[side]].points;
+    if (m->format == U_FMT_TAG && m->team[side] != U_NONE) return u->tm[m->team[side]].points;
     for (k = 0; k < 2; k++)
         if (m->side[side][k] != U_NONE) {
             sum += u->w[m->side[side][k]].points;
@@ -1664,7 +2110,7 @@ static void rank_points(Universe *u, const UShow *s, const UMatch *m, int W)
         if (L != W && (best < 0 || sp[L] > best)) best = sp[L];
     for (L = 0; L < n; L++) {
         int loss = -(U_PTS_LOSS + clamp((sp[L] - sp[W]) / U_PTS_GAP, 0, U_PTS_GAP_MAX));
-        if (m->format == U_FMT_TAG) {
+        if (m->format == U_FMT_TAG && m->team[L] != U_NONE) {
             UTeam *t = &u->tm[m->team[L]];
             score(&t->points, &t->streak,
                   L == W ? win_points(best - sp[W], t->streak, ppv, 0) : loss, L == W);
@@ -1754,10 +2200,8 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
             }
         }
     }
-    if (tag) {
-        u->tm[m->team[W]].wins++;
-        u->tm[m->team[1 - W]].losses++;
-    }
+    if (tag && m->team[W] != U_NONE) u->tm[m->team[W]].wins++;    /* (makeshift teams: */
+    if (tag && m->team[1 - W] != U_NONE) u->tm[m->team[1 - W]].losses++;   /* no record) */
 
     /* Titles only change hands decisively (not by count-out or DQ). */
     if (m->title != U_NONE) {
@@ -1801,19 +2245,25 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
             r->intensity = 0;
             m->rivalry_ended = 1;
         } else {
-            r->intensity = (uint8_t)clamp(r->intensity + 10, 1, 100);
+            r->intensity = (uint8_t)clamp(r->intensity + U_FEUD_BUILD, 1, 100);
         }
     } else if (m->format == U_FMT_SINGLE) {
+        /* new feuds: an upset or a cheap finish (50%), a challenger who
+         * fell short of the title (50%), a No. 1 Contender Match loser
+         * (40%) - unless either already has two feuds going */
         uint8_t a = m->side[0][0], b = m->side[1][0];
-        if ((upset || !decisive) && !in_rivalry(u, a) && !in_rivalry(u, b) &&
-            u_rand(u, 100) < 50) {
-            int nr = u_add_rivalry(u, a, b, 30);
+        int chance = (upset || !decisive) ? 50 : m->title != U_NONE ? 50
+                   : m->why == U_WHY_NO1_MATCH ? 40 : 0;
+        if (chance && rivalries_of(u, a) < 2 && rivalries_of(u, b) < 2 && !allies(u, a, b) &&
+            (int)u_rand(u, 100) < chance) {
+            int nr = u_add_rivalry(u, a, b, m->title != U_NONE ? 35 : 30);
             if (nr >= 0) {
                 touched[nr] = 1;
                 m->rivalry_started = 1;
             }
         }
     }
+
 
     /* King of the Ring: the final's winner is crowned */
     if (m->kotr == U_KOTR_MATCHES && !tag) {
@@ -2053,6 +2503,26 @@ void u_apply_show(Universe *u, UShow *s)
         for (k = 0; m->format == U_FMT_TAG && k < 2; k++)
             if (m->team[k] != U_NONE) u->tm[m->team[k]].last_show = (uint16_t)(4u * u->week + u->slot);
         apply_match(u, s, m, touched);
+    }
+
+    /* A No. 1 Contender Match's winner becomes No. 1 (once the show's
+     * results are all in) */
+    for (i = 0; i < s->count; i++) {
+        const UMatch *m = &s->m[i];
+        uint8_t con[U_MAX_WRESTLERS];
+        int n, k, tag = m->format == U_FMT_TAG;
+        uint8_t win;
+        if (!m->done || m->why != U_WHY_NO1_MATCH || m->why_title >= u->n_titles || m->winner >= 2)
+            continue;
+        win = tag ? m->team[m->winner] : m->side[m->winner][0];
+        if (win == U_NONE) continue;
+        n = u_contenders(u, m->why_title, con, U_MAX_WRESTLERS);
+        for (k = 0; k < n && con[k] == win; k++) {}
+        if (k >= n) continue;
+        if (tag && u->tm[con[k]].points >= u->tm[win].points)
+            u->tm[win].points = (uint16_t)clamp(u->tm[con[k]].points + 1, 0, U_PTS_MAX);
+        if (!tag && u->w[con[k]].points >= u->w[win].points)
+            u->w[win].points = (uint16_t)clamp(u->w[con[k]].points + 1, 0, U_PTS_MAX);
     }
 
     /* Rivalries that weren't on this show cool off (one roster: every

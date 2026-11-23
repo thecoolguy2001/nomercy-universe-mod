@@ -67,3 +67,39 @@ screenshots, used to verify the payload without an emulator.
   reported), or the VI mode on a particular video plugin.
 - Unknown whether No Mercy touches 0x807F0000 when an Expansion Pak is
   present (it appears not to read the memory size at all).
+
+## Booking as built (plan step 8, 2026-11-23; supersedes the bullets above)
+The rules are notes/universe-plan.md's; where the plan leaves a number or
+a detail open, this is what the engine does:
+- Card size: weekly 7, PPV 10, WrestleMania 12; King of the Ring 17.
+- Weekly: titles when due (chance grows with weeks since the last
+  defence; Raw +10 World / -5 others, SmackDown -10 World / +10 others),
+  debuts, feuds (Raw up to 4, SmackDown up to 3), the women's match, a
+  No. 1 Contender Match 35% of shows (No. 2 vs No. 3 of a title not on
+  the card; the winner is put just above No. 1), one tag match
+  (SmackDown two half the time), a Triple Threat 30% / Handicap 20%,
+  then the rankings. Hot feuds (70+) are Cage 10% / No DQ 10%.
+- PPVs: every title (except KOTR: World only; Survivor Series: World only),
+  then feuds, then the rankings (Royal Rumble: no fill, one feud).
+- Feud matches: a three-way feud is a Triple Threat 30% (TV) / 40% (PPV);
+  two tag team members' feud is team vs team 50%.
+- Stipulations: No Way Out / SummerSlam: the hottest feud match 50%;
+  Backlash, Fully Loaded, No Mercy, Armageddon: Cage for the hottest 1 on
+  1 feud 20%; Judgment Day: Ironman for title matches in an 85+ feud;
+  WrestleMania: Ladder for the hottest non-World title match (men's titles
+  first); Guest Referee: 50% when a free wrestler feuds with everyone in the
+  match (PPVs); Hardcore title: No DQ always.
+- Unforgiven: World title Triple Threat (champion, his top-5 rival or No. 1,
+  next contender); Handicap: a feud where one side brings a close ally,
+  else the best of three free men alone. Survivor Series: rival teams,
+  feuds fought with each side's closest ally (makeshift teams, no team
+  ids), the other teams, then faces vs heels.
+- Feuds start from upsets / cheap finishes (50%), a lost title shot (50%),
+  a lost No. 1 Contender Match (40%) - for wrestlers in fewer than two
+  feuds - and from run-ins; a clean finish adds 20 heat, a cheap one 20;
+  a feud ends on a clean finish at a PPV or after 4 matches; 2 heat lost
+  per show off the card. About 13 feuds alive at a time.
+- The card says why: "<Title> - Champion vs No. 1 Contender" / "vs Rival" /
+  "vs Top Contenders" / "Royal Rumble Winner's Shot" / "Vacant: No. 1 vs
+  No. 2", "No. 1 Contender Match (<Title>)", "Rivalry", "Tag Team Debut"
+  ("No. 1": '#' is a control code in the game's font).

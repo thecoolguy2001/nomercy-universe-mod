@@ -148,7 +148,11 @@ static void print_match(const Universe *u, const UMatch *m, int num, int last)
     if (m->format != U_FMT_SINGLE) printf("  <%s>", u_format_name(m->format));
     if (m->stip != U_STIP_NORMAL) printf("  <%s>", u_stip_name(m->stip));
     if (m->title != U_NONE) printf("  [%s]", u->t[m->title].name);
-    if (m->rivalry != U_NONE) printf("  (rivalry)");
+    {
+        char why[64];
+        if (u_why_text(u, m, why, sizeof why)) printf("  -- %s", why);
+        else if (m->rivalry != U_NONE) printf("  -- Rivalry");
+    }
     printf("\n");
 }
 

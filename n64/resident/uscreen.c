@@ -866,10 +866,15 @@ void us_draw(void *holder)
         if (m->format != U_FMT_SINGLE) { s_add(&s, u_format_name(m->format)); s_add(&s, " "); }
         if (m->stip != U_STIP_NORMAL) { s_add(&s, u_stip_name(m->stip)); s_add(&s, " "); }
         if (m->format != U_FMT_SINGLE || m->stip != U_STIP_NORMAL) s_add(&s, "Match  ");
-        if (m->title != U_NONE) s_add(&s, U.t[m->title].name);
+        if (m->title != U_NONE && (m->done || !m->why)) s_add(&s, U.t[m->title].name);
         text_scaled(holder, line[9], 172, s.n > 34 ? 0xA8 : s.n > 28 ? 0xC0 : 0xD8);
         s_init(&s, line[10], LINE_LEN);
-        if (m->format == U_FMT_RUMBLE) {
+        if (!m->done && m->why && m->format != U_FMT_RUMBLE && u_match_ready(m) &&
+            m->referee == U_NONE) {
+            char why[LINE_LEN];               /* why it's on the card */
+            u_why_text(&U, m, why, sizeof why);
+            s_add(&s, why);
+        } else if (m->format == U_FMT_RUMBLE) {
             if (m->done && m->winner < m->n_entrants) {
                 s_add(&s, "Winner came in at number ");   /* ('#' is a control code) */
                 s_num(&s, (unsigned)m->winner + 1u);
@@ -897,7 +902,7 @@ void us_draw(void *holder)
             s_add(&s, "Referee: ");
             s_add(&s, U.w[m->referee].name);
         }
-        if (s.n) small(holder, line[10], 185);
+        if (s.n) text_scaled(holder, line[10], 185, s.n > 36 ? 0xB0 : s.n > 30 ? 0xC4 : 0xD8);
     }
     small(holder, "$2Rankings", 214);
     if (card_done())
