@@ -718,7 +718,7 @@ static void test_king_of_the_ring(void)
     UShow s;
     int i, guard = 0, at[U_KOTR_MATCHES], titles = 0, others = 0;
     uint8_t seen[U_MAX_WRESTLERS], rank[U_MAX_WRESTLERS], king;
-    demo_universe(&u, 4);
+    roster_universe(&u, 4);                      /* (a 16-man bracket) */
     while (!(u.slot == 2 && u_ppv_index(&u) == 5) && guard++ < 200) sim_show(&u, &s);
     CHECK(!strcmp(u_show_name(&u), "King of the Ring"));
     u_book_show(&u, &s);
@@ -1408,7 +1408,10 @@ static void test_booking_rules(void)
                 for (i = 0; i < s.count; i++)                     /* the World title */
                     if (s.m[i].title == 0) {                      /* main event */
                         CHECK(i == s.count - 1);
-                        if (rw != U_NONE && !u.w[rw].injured_weeks && rw != u_title_holder(&u, 0))
+                        uint8_t ch = u_title_holder(&u, 0);
+                        int same = rw != U_NONE && ch != U_NONE && (ch == rw || (u.w[rw].persona &&    /* (one */
+                                   u.w[rw].persona == u.w[ch].persona));          /* man) */
+                        if (rw != U_NONE && !u.w[rw].injured_weeks && !same)
                             CHECK(involves(&s.m[i], rw));
                     }
             }
@@ -1432,6 +1435,93 @@ static void test_booking_rules(void)
     CHECK(no1 > 0 && weekly_cage > 0 && ss_tags > 0 && three_way > 0);
     for (k = 0; k < U_WHY_COUNT; k++)
         if (k != U_WHY_VACANT) CHECK(whys[k] > 0);
+}
+
+/* Section 2: ability changes over time */
+static void test_ratings(void)
+{
+    Universe u;
+    UShow e;
+    uint8_t a, b, c;
+    int i, base;
+    roster_universe(&u, 31);
+    a = (uint8_t)by_name(&u, "Viscera");          /* (rated below b and c) */
+    b = (uint8_t)by_name(&u, "Kane");
+    c = (uint8_t)by_name(&u, "Al Snow");
+    for (i = 0; i < u.n_wrestlers; i++) { u.w[i].injured_weeks = 0; u.w[i].form_w = u.w[i].form_l = 0; }
+    base = u.w[a].overall;
+    CHECK(u.w[a].base_overall == base);
+    memset(&e, 0, sizeof e);
+    e.kind = U_SHOW_WEEKLY;
+    /* 3 wins over a better-rated man: +1 at the 4-weekly review; his 3
+     * losses to a worse-rated one: -1 */
+    for (i = 0; i < 3; i++)
+        play_one(&u, 0, U_FMT_SINGLE, a, U_NONE, b, U_NONE, U_NONE, U_NONE, 0);
+    CHECK(u.w[a].form_w == 3 && u.w[b].form_l == 3);
+    i = u.w[b].overall;
+    u.week = 8; u.slot = 0;                           /* (week 8: a review week) */
+    u_apply_show(&u, &e);
+    CHECK(u.w[a].overall == base + 1 && u.w[b].overall == i - 1);
+    CHECK(u.w[a].form_w == 0 && u.w[b].form_l == 0);
+    /* a single upset, or beating a worse-rated man: no change */
+    play_one(&u, 0, U_FMT_SINGLE, c, U_NONE, b, U_NONE, U_NONE, U_NONE, 0);
+    play_one(&u, 0, U_FMT_SINGLE, b, U_NONE, a, U_NONE, U_NONE, U_NONE, 0);
+    play_one(&u, 0, U_FMT_SINGLE, b, U_NONE, a, U_NONE, U_NONE, U_NONE, 0);
+    CHECK(u.w[b].form_w == 0 && u.w[b].form_l == 1);
+    i = u.w[c].overall;
+    u.week = 12; u.slot = 0;
+    u_apply_show(&u, &e);
+    CHECK(u.w[c].overall == i);
+    /* never more than 10 above (or below) the start */
+    for (i = 0; i < 30; i++) {
+        u.w[a].form_w = 5; u.w[a].form_l = 0;
+        u.week = (uint16_t)(16 + 4 * i); u.slot = 0;
+        u_apply_show(&u, &e);
+    }
+    CHECK(u.w[a].overall == base + 10);
+    u.w[b].overall = 33; u.w[b].base_overall = 35;
+    for (i = 0; i < 10; i++) {
+        u.w[b].form_w = 0; u.w[b].form_l = 4;
+        u.week = (uint16_t)(200 + 4 * i); u.slot = 0;
+        u_apply_show(&u, &e);
+    }
+    CHECK(u.w[b].overall == 30);                      /* (never under 30) */
+    /* saved */
+    {
+        Universe v;
+        uint8_t buf[U_SAVE_SIZE];
+        u.w[c].form_w = 2;
+        CHECK(u_save(&u, buf, sizeof buf) == U_SAVE_SIZE && u_load(&v, buf, sizeof buf) == 0);
+        CHECK(v.w[a].base_overall == base && v.w[a].overall == base + 10 && v.w[c].form_w == 2);
+    }
+    /* big moments: the Royal Rumble winner +2 (over a year of shows, every
+     * Rumble winner and King gains) */
+    {
+        Universe w;
+        UShow s;
+        int show, k, gained = 0, events = 0;
+        roster_universe(&w, 32);
+        for (show = 0; show < 112; show++) {
+            uint8_t before[U_MAX_WRESTLERS];
+            for (k = 0; k < w.n_wrestlers; k++) before[k] = w.w[k].overall;
+            u_book_show(&w, &s);
+            u_sim_show(&w, &s);
+            u_apply_show(&w, &s);
+            for (k = 0; k < s.count; k++) {
+                const UMatch *m = &s.m[k];
+                uint8_t id = U_NONE;
+                if (m->format == U_FMT_RUMBLE && m->winner < m->n_entrants &&
+                    w.w[m->entrant[m->winner]].role == U_ROLE_REGULAR)
+                    id = m->entrant[m->winner];
+                if (m->kotr == U_KOTR_MATCHES && m->winner < 2) id = m->side[m->winner][0];
+                if (id == U_NONE) continue;
+                events++;
+                gained += w.w[id].overall > before[id] ||
+                          w.w[id].overall == w.w[id].base_overall + 10 || w.w[id].overall == 99;
+            }
+        }
+        CHECK(events >= 2 && gained == events);
+    }
 }
 
 /* Title contenders: the top 5 per belt (plan step 6) */
@@ -1507,6 +1597,7 @@ int main(void)
     test_allies_over_time();
     test_teams_form_and_split();
     test_booking_rules();
+    test_ratings();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;

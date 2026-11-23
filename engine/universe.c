@@ -293,6 +293,7 @@ int u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
     w->brand = brand;
     w->align = align ? U_HEEL : U_FACE;
     w->overall = (uint8_t)clamp(overall, 0, 100);
+    w->base_overall = w->overall;
     w->points = (uint16_t)(U_PTS_START * w->overall);
     w->active = 1;
     return u->n_wrestlers++;
@@ -744,8 +745,43 @@ int u_set_align(Universe *u, uint8_t id, uint8_t align)
 int u_set_overall(Universe *u, uint8_t id, uint8_t overall)
 {
     if (id >= u->n_wrestlers) return -1;
-    u->w[id].overall = (uint8_t)clamp(overall, 0, 100);
+    u->w[id].overall = u->w[id].base_overall = (uint8_t)clamp(overall, 0, 100);
     return 0;
+}
+
+/* ---- ability over time ---- */
+#define U_RATE_RANGE   10   /* within this of the starting ability */
+#define U_RATE_REVIEW  4    /* weeks between form reviews */
+
+static void rate(Universe *u, uint8_t id, int delta)
+{
+    UWrestler *w = &u->w[id];
+    int lo = w->base_overall - U_RATE_RANGE, hi = w->base_overall + U_RATE_RANGE;
+    if (lo < 30) lo = 30;
+    if (hi > 99) hi = 99;
+    if (lo > hi) lo = hi;
+    w->overall = (uint8_t)clamp(w->overall + delta, lo, hi);
+}
+
+static void review_form(Universe *u)
+{
+    int i;
+    for (i = 0; i < u->n_wrestlers; i++) {
+        UWrestler *w = &u->w[i];
+        int net = (int)w->form_w - (int)w->form_l;   /* above / below expectations */
+        if (net >= 2) rate(u, (uint8_t)i, 1);
+        else if (net <= -2) rate(u, (uint8_t)i, -1);
+        w->form_w = w->form_l = 0;
+    }
+}
+
+/* an injury of 1-3 weeks (3 weeks costs a point of ability) */
+static void injure(Universe *u, uint8_t id, UMatch *m)
+{
+    u->w[id].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
+    if (u->w[id].injured_weeks >= 3) rate(u, id, -1);
+    m->injured = id;
+    m->injury_weeks = u->w[id].injured_weeks;
 }
 
 int u_set_active(Universe *u, uint8_t id, uint8_t active)
@@ -1250,6 +1286,10 @@ static void one_persona(Booker *b)
                 if (keep < 0 && holds_a_title(u, (uint8_t)j)) keep = j;   /* champions first */
             }
         if (free < 2) continue;
+        if (keep < 0 && b->s->kind == U_SHOW_PPV && u_ppv_index(u) == 2 &&    /* WrestleMania: */
+            u->rumble_winner < u->n_wrestlers && !b->used[u->rumble_winner] &&   /* the Rumble */
+            u->w[u->rumble_winner].persona == u->w[i].persona)                  /* winner */
+            keep = u->rumble_winner;
         for (j = i; keep < 0 && j < u->n_wrestlers; j++)                  /* then a feud */
             if (u->w[j].persona == u->w[i].persona && !b->used[j] && in_rivalry(u, (uint8_t)j))
                 keep = j;
@@ -2060,12 +2100,7 @@ static void apply_draw(Universe *u, UMatch *m, uint8_t *touched)
     for (L = 0; L < n; L++)
         for (k = 0; k < 2; k++)
             if (m->side[L][k] != U_NONE) ids[cnt++] = m->side[L][k];
-    if (cnt && u_rand(u, 100) < 4) {
-        uint8_t id = ids[u_rand(u, (uint32_t)cnt)];
-        u->w[id].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
-        m->injured = id;
-        m->injury_weeks = u->w[id].injured_weeks;
-    }
+    if (cnt && u_rand(u, 100) < 4) injure(u, ids[u_rand(u, (uint32_t)cnt)], m);
 }
 
 /* ---- ranking points ---- */
@@ -2149,14 +2184,13 @@ static void apply_rumble(Universe *u, UMatch *m)
     u->w[id].wins++;
     score(&u->w[id].points, &u->w[id].streak, U_PTS_RUMBLE, 1);
     add_momentum(&u->w[id], 15);
-    if (u->w[id].role == U_ROLE_REGULAR) u->rumble_winner = id;
+    if (u->w[id].role == U_ROLE_REGULAR) {
+        u->rumble_winner = id;
+        rate(u, id, 2);
+    }
     if (u_rand(u, 100) < 4) {
         uint8_t hurt = m->entrant[u_rand(u, m->n_entrants)];
-        if (u->w[hurt].role == U_ROLE_REGULAR && hurt != id) {
-            u->w[hurt].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
-            m->injured = hurt;
-            m->injury_weeks = u->w[hurt].injured_weeks;
-        }
+        if (u->w[hurt].role == U_ROLE_REGULAR && hurt != id) injure(u, hurt, m);
     }
 }
 
@@ -2190,11 +2224,22 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
         for (k = 0; k < 2; k++) {
             uint8_t id = m->side[L][k];
             if (id == U_NONE) continue;
+            /* form: a win over a better-rated side, a loss to a worse one */
+            int opp = 0, x;
+            for (x = 0; x < n; x++)
+                if (x != L) {
+                    int k2;
+                    for (k2 = 0; k2 < 2; k2++)
+                        if (m->side[x][k2] != U_NONE && u->w[m->side[x][k2]].overall > opp)
+                            opp = u->w[m->side[x][k2]].overall;
+                }
             if (L == W) {
                 u->w[id].wins++;
+                if (opp > u->w[id].overall && u->w[id].form_w < 255) u->w[id].form_w++;
                 add_momentum(&u->w[id], (upset ? 14 : 8) - (tag ? 2 : 0));
             } else {
                 u->w[id].losses++;
+                if (opp < u->w[id].overall && u->w[id].form_l < 255) u->w[id].form_l++;
                 add_momentum(&u->w[id], tag ? -4 : -6);
                 if (nl < 4) losers[nl++] = id;
             }
@@ -2212,7 +2257,15 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
             if (cur->defenses < 255) cur->defenses++;
         } else if (decisive) {
             UReign *nr;
-            if (!t->vacant && cur) cur->lost_week = u->week;
+            if (!t->vacant && cur) {
+                cur->lost_week = u->week;
+                if (t->kind == U_TITLE_TAG) {                /* the old champions -1 */
+                    rate(u, u->tm[cur->holder].a, -1);
+                    rate(u, u->tm[cur->holder].b, -1);
+                } else {
+                    rate(u, cur->holder, -1);
+                }
+            }
             t->vacant = 0;
             t->reign_count++;
             if (t->reign_count == 0) t->reign_count = U_MAX_REIGNS; /* keep ring valid */
@@ -2225,7 +2278,10 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
             /* the belt goes to the new champion's brand (matters at PPVs) */
             t->brand = u->w[m->side[W][0]].brand;
             for (k = 0; k < 2; k++)
-                if (m->side[W][k] != U_NONE) add_momentum(&u->w[m->side[W][k]], 10);
+                if (m->side[W][k] != U_NONE) {
+                    add_momentum(&u->w[m->side[W][k]], 10);
+                    rate(u, m->side[W][k], 1);           /* a new champion */
+                }
         }
     }
 
@@ -2269,14 +2325,10 @@ static void apply_match(Universe *u, const UShow *s, UMatch *m, uint8_t *touched
     if (m->kotr == U_KOTR_MATCHES && !tag) {
         u->king = m->side[W][0];
         add_momentum(&u->w[u->king], 20);
+        rate(u, u->king, 2);
     }
 
-    if (nl && u_rand(u, 100) < 4) {
-        uint8_t id = losers[u_rand(u, (uint32_t)nl)];
-        u->w[id].injured_weeks = (uint8_t)(1 + u_rand(u, 3));
-        m->injured = id;
-        m->injury_weeks = u->w[id].injured_weeks;
-    }
+    if (nl && u_rand(u, 100) < 4) injure(u, losers[u_rand(u, (uint32_t)nl)], m);
 }
 
 /* ---- allies and tag teams over time ---- */
@@ -2487,6 +2539,7 @@ void u_apply_show(Universe *u, UShow *s)
     u_zero(touched, sizeof touched);
     if (u->slot == 0) {   /* a new week: points decay, injuries heal by one week */
         decay_points(u);
+        if (u->week % U_RATE_REVIEW == 0) review_form(u);
         for (i = 0; i < u->n_wrestlers; i++)
             if (u->w[i].injured_weeks) u->w[i].injured_weeks--;
     }
@@ -2615,6 +2668,7 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
         w8(&w, x->gender); w8(&w, x->game_attire); w16(&w, x->weight); w8(&w, x->persona);
         w16(&w, x->wins); w16(&w, x->losses);
         w16(&w, x->points); w8(&w, (uint8_t)x->streak); w16(&w, x->last_show);
+        w8(&w, x->base_overall); w8(&w, x->form_w); w8(&w, x->form_l);
     }
     for (i = 0; i < U_MAX_TEAMS; i++) {
         const UTeam *t = &u->tm[i];
@@ -2694,6 +2748,7 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         x->gender = r8(&r); x->game_attire = r8(&r); x->weight = r16(&r); x->persona = r8(&r);
         x->wins = r16(&r); x->losses = r16(&r);
         x->points = r16(&r); x->streak = (int8_t)r8(&r); x->last_show = r16(&r);
+        x->base_overall = r8(&r); x->form_w = r8(&r); x->form_l = r8(&r);
         if (i < nw && (x->brand >= U_BRAND_COUNT || x->role > U_ROLE_FILLIN ||
                        x->gender > U_FEMALE || x->game_attire > 3))
             return load_fail(u, -6);

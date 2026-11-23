@@ -91,8 +91,9 @@ static void print_status(const Universe *u)
         printf("\n== %s ==\n", b ? "Women" : "Men");
         for (i = 0; i < n; i++) {
             const UWrestler *w = &u->w[rank[i]];
-            printf("  %2d. %-16s %4u pts  %s  %3u-%-3u streak %+3d%s\n", i + 1, w->name,
-                   w->points, w->align == U_FACE ? "face" : "heel", w->wins, w->losses,
+            printf("  %2d. %-16s %4u pts  ovr %2u (%+d)  %s  %3u-%-3u streak %+3d%s\n", i + 1,
+                   w->name, w->points, w->overall, (int)w->overall - (int)w->base_overall,
+                   w->align == U_FACE ? "face" : "heel", w->wins, w->losses,
                    w->streak, w->injured_weeks ? "  [injured]" : "");
         }
     }

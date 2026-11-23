@@ -103,6 +103,8 @@ typedef struct {
     uint16_t points;        /* ranking points (see u_rankings) */
     int8_t   streak;        /* wins (> 0) or losses (< 0) in a row */
     uint16_t last_show;     /* 4 * week + slot of his last match, 0 = none yet */
+    uint8_t  base_overall;  /* his starting ability: overall moves within 10 of it */
+    uint8_t  form_w, form_l;/* wins / losses since the last 4-weekly review */
 } UWrestler;
 
 typedef struct {
@@ -233,10 +235,10 @@ typedef struct {
     UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 10     /* bumped when the layout changes */
+#define U_SAVE_VERSION 11     /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
-#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 22)
+#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 25)
 #define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 15)
 #define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 9 + U_MAX_REIGNS * 6)
 #define U_SAVE_SIZE (U_SAVE_HEADER_BYTES \
@@ -274,7 +276,12 @@ uint8_t u_companion(const Universe *u, const UMatch *m, uint8_t id);
 int     u_top_rivals(const Universe *u, uint8_t id, uint8_t *out, int max);
 int     u_set_brand(Universe *u, uint8_t id, uint8_t brand);   /* titles follow */
 int     u_set_align(Universe *u, uint8_t id, uint8_t align);
-int     u_set_overall(Universe *u, uint8_t id, uint8_t overall);
+int     u_set_overall(Universe *u, uint8_t id, uint8_t overall);  /* (and its base) */
+/* Ability changes over time: every 4 weeks a wrestler gains 1 when his
+ * wins over better-rated opponents outnumber his losses to worse-rated
+ * ones by 2 or more (loses 1 the other way); winning a title +1, losing it
+ * -1, King of the Ring or the Royal Rumble +2, a 3-week injury -1; always
+ * within 10 of his starting ability (30-99). */
 int     u_set_active(Universe *u, uint8_t id, uint8_t active); /* vacates titles */
 
 /* ---- queries ---- */
