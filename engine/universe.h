@@ -20,9 +20,11 @@
 #define U_MAX_TEAMS      16
 #define U_MAX_TITLES     8   /* the game's 7 belts */
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
-#define U_MAX_RIVALRIES  16
+#define U_MAX_RIVALRIES  80   /* a new universe starts with every game rival */
+#define U_MAX_ALLIES     48
 #define U_MAX_MATCHES    20  /* King of the Ring PPV: 15 tournament matches + 2 */
 #define U_WEEKLY_MATCHES 7
+#define U_WEEKLY_FEUDS   4    /* rivalry matches per weekly show (the rest from rankings) */
 #define U_PPV_MATCHES    8
 #define U_PPV_EVERY      4   /* a PPV closes every 4th week */
 #define U_NAME_LEN       16  /* includes terminating zero */
@@ -134,6 +136,14 @@ typedef struct {
     uint16_t last_show;     /* 4 * week + slot of the show it was last on */
 } URivalry;
 
+/* How close two wrestlers are (0-100): tag partners, valets, factions.
+ * Allies are never booked against each other in singles or feuds. */
+typedef struct {
+    uint8_t a, b;
+    uint8_t level;          /* 0 = unused */
+} UAlly;
+#define U_ALLY_CLOSE 70     /* close allies: never opponents */
+
 typedef struct {
     /* booking (filled by u_book_show) */
     uint8_t format;         /* U_FMT_* */
@@ -186,9 +196,10 @@ typedef struct {
     UTeam     tm[U_MAX_TEAMS];
     UTitle    t[U_MAX_TITLES];
     URivalry  r[U_MAX_RIVALRIES];
+    UAlly     al[U_MAX_ALLIES];
 } Universe;
 
-#define U_SAVE_VERSION 6      /* bumped when the layout changes */
+#define U_SAVE_VERSION 7      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
 #define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 17)
@@ -198,7 +209,7 @@ typedef struct {
                      + U_MAX_WRESTLERS * U_SAVE_WRESTLER_BYTES \
                      + U_MAX_TEAMS * U_SAVE_TEAM_BYTES \
                      + U_MAX_TITLES * U_SAVE_TITLE_BYTES \
-                     + U_MAX_RIVALRIES * 6 + 2)
+                     + U_MAX_RIVALRIES * 6 + U_MAX_ALLIES * 3 + 2)
 
 /* ---- setup / roster management ---- */
 void    u_init(Universe *u, uint32_t seed);
@@ -216,6 +227,9 @@ int     u_add_team(Universe *u, const char *name, uint8_t a, uint8_t b);
 int     u_add_title(Universe *u, const char *name, uint8_t brand, uint8_t kind,
                     uint8_t holder);
 int     u_add_rivalry(Universe *u, uint8_t a, uint8_t b, uint8_t intensity);
+/* sets (or raises) the ally level of a pair; -1 if full or invalid */
+int     u_add_ally(Universe *u, uint8_t a, uint8_t b, uint8_t level);
+int     u_ally_level(const Universe *u, uint8_t a, uint8_t b);
 int     u_set_brand(Universe *u, uint8_t id, uint8_t brand);   /* titles follow */
 int     u_set_align(Universe *u, uint8_t id, uint8_t align);
 int     u_set_overall(Universe *u, uint8_t id, uint8_t overall);

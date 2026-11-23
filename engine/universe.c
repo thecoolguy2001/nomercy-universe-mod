@@ -341,6 +341,35 @@ int u_add_rivalry(Universe *u, uint8_t a, uint8_t b, uint8_t intensity)
 
 /* ---------- queries ---------- */
 
+int u_add_ally(Universe *u, uint8_t a, uint8_t b, uint8_t level)
+{
+    int i, free = -1;
+    if (a == b || a >= u->n_wrestlers || b >= u->n_wrestlers || !level) return -1;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        UAlly *x = &u->al[i];
+        if (x->level && ((x->a == a && x->b == b) || (x->a == b && x->b == a))) {
+            if (level > x->level) x->level = (uint8_t)clamp(level, 1, 100);
+            return i;
+        }
+        if (!x->level && free < 0) free = i;
+    }
+    if (free < 0) return -1;
+    u->al[free].a = a;
+    u->al[free].b = b;
+    u->al[free].level = (uint8_t)clamp(level, 1, 100);
+    return free;
+}
+
+int u_ally_level(const Universe *u, uint8_t a, uint8_t b)
+{
+    int i;
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        if (x->level && ((x->a == a && x->b == b) || (x->a == b && x->b == a))) return x->level;
+    }
+    return 0;
+}
+
 static UReign *current_reign(UTitle *t)
 {
     return t->reign_count ? &t->history[(t->reign_count - 1) % U_MAX_REIGNS] : 0;
@@ -457,6 +486,12 @@ static int find_rivalry(const Universe *u, uint8_t a, uint8_t b)
             return i;
     }
     return -1;
+}
+
+/* Close allies (tag partners, valets) are not booked as opponents. */
+static int allies(const Universe *u, uint8_t a, uint8_t b)
+{
+    return u_ally_level(u, a, b) >= U_ALLY_CLOSE;
 }
 
 static int in_rivalry(const Universe *u, uint8_t id)
@@ -622,16 +657,36 @@ static int rested(const Booker *b, const URivalry *r)
            r->last_show == 4u * b->u->week + U_BRAND_RAW;
 }
 
+#define U_WOMEN_MATCHES 2   /* women's matches per card at most */
+
+static int women_matches(const Booker *b)
+{
+    int i, n = 0;
+    for (i = 0; i < b->s->count; i++) {
+        uint8_t id = b->s->m[i].side[0][0];
+        if (id != U_NONE && b->u->w[id].gender == U_FEMALE) n++;
+    }
+    return n;
+}
+
+/* Two rivals whose feud is resting this show (see rested()) */
+static int resting_pair(const Booker *b, uint8_t x, uint8_t y)
+{
+    int ri = find_rivalry(b->u, x, y);
+    return ri >= 0 && rested(b, &b->u->r[ri]);
+}
+
 /* Hottest rivalry whose two members are both still unbooked. If id is not
  * U_NONE, the rivalry must involve that wrestler. */
 static int best_open_rivalry(const Booker *b, uint8_t id)
 {
     const Universe *u = b->u;
-    int i, best = -1;
+    int i, best = -1, women_full = women_matches(b) >= U_WOMEN_MATCHES;
     for (i = 0; i < U_MAX_RIVALRIES; i++) {
         const URivalry *r = &u->r[i];
         if (!r->intensity || b->used[r->a] || b->used[r->b]) continue;
         if (u->w[r->a].gender != u->w[r->b].gender) continue;  /* (no intergender matches) */
+        if (women_full && u->w[r->a].gender == U_FEMALE) continue;
         if (rested(b, r)) continue;
         if (id != U_NONE && r->a != id && r->b != id) continue;
         if (best < 0 || r->intensity > u->r[best].intensity) best = i;
@@ -828,7 +883,8 @@ static int pick_eligible(const Booker *b, const uint8_t *rank, int n)
 
 /* How big a match is: the card runs from the least to the most important
  * (the main event last). The World title first, then the Royal Rumble's own
- * main event, the tag and secondary titles, hot feuds by their heat, the
+ * main event, the tag and secondary titles, hot feuds by their heat and
+ * star power, the
  * rest by the wrestlers' ability. */
 static int prominence(const Universe *u, const UMatch *m)
 {
@@ -837,14 +893,16 @@ static int prominence(const Universe *u, const UMatch *m)
     if (m->title == 0) return 500;
     if (m->title != U_NONE)
         return u->t[m->title].kind == U_TITLE_TAG ? 220 : clamp(270 - 20 * m->title, 100, 250);
-    if (m->rivalry != U_NONE) return 120 + 2 * u->r[m->rivalry].intensity;
     for (k = 0; k < 6; k++)
         if (m->side[k / 2][k % 2] != U_NONE) {
             const UWrestler *w = &u->w[m->side[k / 2][k % 2]];
             sum += w->gender == U_FEMALE ? w->overall / 2 : w->overall;
             cnt++;
         }
-    return cnt ? sum / cnt : 0;
+    if (cnt) sum /= cnt;
+    /* feuds by heat, then star power (the biggest names' feud main-events) */
+    if (m->rivalry != U_NONE) return 30 + 2 * u->r[m->rivalry].intensity + sum;
+    return sum;
 }
 
 /* One man's characters (Mankind, Cactus Jack, Mick Foley): only one of
@@ -1003,7 +1061,7 @@ void u_book_show(Universe *u, UShow *s)
         }
     }
 
-    while (s->count < b.max) {
+    for (i = 0; s->count < b.max && (ppv || i < U_WEEKLY_FEUDS); i++) {
         int ri = best_open_rivalry(&b, U_NONE);
         if (ri < 0) break;
         if (u->w[u->r[ri].a].gender == U_FEMALE) women_booked = 1;
@@ -1015,7 +1073,9 @@ void u_book_show(Universe *u, UShow *s)
     if (!women_booked && s->count < b.max) {
         int x = -1, y = -1;
         for (i = 0; i < nw; i++) {
-            if (b.used[women[i]]) continue;
+            if (b.used[women[i]] || (x >= 0 && (allies(u, (uint8_t)x, women[i]) ||
+                                                resting_pair(&b, (uint8_t)x, women[i]))))
+                continue;
             if (x < 0) x = women[i];
             else if (u->w[women[i]].align != u->w[x].align || y < 0) {
                 y = women[i];
@@ -1042,8 +1102,11 @@ void u_book_show(Universe *u, UShow *s)
         uint8_t f[3];
         int nf = 0, roll = (int)u_rand(u, 100);
         uint8_t stip = u_rand(u, 100) < 15 ? U_STIP_NODQ : U_STIP_NORMAL;  /* interim */
-        for (i = 0; i < nm && nf < 3; i++)
-            if (!b.used[men[i]]) f[nf++] = men[i];
+        for (i = 0; i < nm && nf < 3; i++) {
+            if (b.used[men[i]]) continue;
+            for (j = 0; j < nf && !allies(u, f[j], men[i]); j++) {}
+            if (j == nf) f[nf++] = men[i];
+        }
         if (nf == 3 && roll < 30) {
             book_triple(&b, f[0], f[1], f[2], U_NONE, stip);
         } else if (nf == 3 && roll < 50) {
@@ -1057,14 +1120,15 @@ void u_book_show(Universe *u, UShow *s)
         int pick = -1;
         if (b.used[a]) continue;
         for (j = i + 1; j < nm && j <= i + 4; j++) { /* nearby, opposite alignment */
-            if (!b.used[men[j]] && u->w[men[j]].align != u->w[a].align) {
+            if (!b.used[men[j]] && u->w[men[j]].align != u->w[a].align &&
+                !allies(u, a, men[j]) && !resting_pair(&b, a, men[j])) {
                 pick = j;
                 break;
             }
         }
         for (j = i + 1; pick < 0 && j < nm; j++)
-            if (!b.used[men[j]]) pick = j;
-        if (pick < 0) break;
+            if (!b.used[men[j]] && !allies(u, a, men[j]) && !resting_pair(&b, a, men[j])) pick = j;
+        if (pick < 0) continue;     /* (only allies left for him) */
         book_singles(&b, a, men[pick], U_NONE, U_NONE, U_STIP_NORMAL);
     }
 
@@ -1588,6 +1652,10 @@ int u_save(const Universe *u, uint8_t *buf, int cap)
         w8(&w, r->a); w8(&w, r->b); w8(&w, r->intensity); w8(&w, r->weeks);
         w16(&w, r->last_show);
     }
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        const UAlly *x = &u->al[i];
+        w8(&w, x->a); w8(&w, x->b); w8(&w, x->level);
+    }
     if (w.err) return -1;
     w16(&w, fletcher16(buf, w.n));
     return w.err ? -1 : w.n;
@@ -1666,6 +1734,12 @@ int u_load(Universe *u, const uint8_t *buf, int len)
         rv->a = r8(&r); rv->b = r8(&r); rv->intensity = r8(&r); rv->weeks = r8(&r);
         rv->last_show = r16(&r);
         if (rv->intensity && (rv->a >= nw || rv->b >= nw || rv->a == rv->b))
+            return load_fail(u, -6);
+    }
+    for (i = 0; i < U_MAX_ALLIES; i++) {
+        UAlly *x = &u->al[i];
+        x->a = r8(&r); x->b = r8(&r); x->level = r8(&r);
+        if (x->level && (x->a >= nw || x->b >= nw || x->a == x->b || x->level > 100))
             return load_fail(u, -6);
     }
     for (i = 0; i < nt; i++) {

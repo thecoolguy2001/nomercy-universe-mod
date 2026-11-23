@@ -118,6 +118,21 @@ static void test_calendar(void)
 }
 
 /* A year of shows across many seeds never produces an invalid card. */
+/* close allies on opposite sides of a match */
+static int opponents_allied(const Universe *u, const UMatch *m)
+{
+    int x, y, i, j;
+    for (x = 0; x < u_match_sides(m); x++)
+        for (y = x + 1; y < u_match_sides(m); y++)
+            for (i = 0; i < 2; i++)
+                for (j = 0; j < 2; j++) {
+                    uint8_t a = m->side[x][i], b = m->side[y][j];
+                    if (a != U_NONE && b != U_NONE && u_ally_level(u, a, b) >= U_ALLY_CLOSE)
+                        return 1;
+                }
+    return 0;
+}
+
 static void test_booking_invariants(void)
 {
     uint32_t seed;
@@ -193,6 +208,9 @@ static void test_booking_invariants(void)
                         CHECK(u.w[m->side[k / 2][k % 2]].gender == u.w[m->side[0][0]].gender);
                 if (m->format == U_FMT_TAG) CHECK(m->team[0] != m->team[1]);
                 if (m->format == U_FMT_HANDICAP) CHECK(m->title == U_NONE);
+                /* matches made from the rankings never pit close allies */
+                if (m->title == U_NONE && m->rivalry == U_NONE && !m->kotr)
+                    CHECK(!opponents_allied(&u, m));
                 if (m->title != U_NONE) {
                     const UTitle *ti = &u.t[m->title];
                     uint8_t h = u_title_holder(&u, m->title);
@@ -205,6 +223,12 @@ static void test_booking_invariants(void)
                         for (k = 0; k < u_match_sides(m); k++)
                             if (m->side[k][0] != h) CHECK(u_eligible(&u, m->side[k][0], ti->division));
                 }
+            }
+            if (s.kind == U_SHOW_WEEKLY) {   /* the rest of the card from rankings */
+                int feuds = 0;
+                for (i = 0; i < s.count; i++)
+                    feuds += s.m[i].rivalry != U_NONE && s.m[i].title == U_NONE;
+                CHECK(feuds <= U_WEEKLY_FEUDS);
             }
             /* at a PPV every healthy singles champion defends (no brand
              * split: weekly defences come when they are due) */
@@ -445,24 +469,35 @@ static void test_rivalry_not_stolen(void)
     }
 }
 
-/* The cross-brand feud (Austin vs HHH) can only happen at a PPV. */
+/* A hot feud (Austin vs HHH) gets its PPV match, unless one of them is
+ * already wrestling for a title there (or is injured). */
 static void test_cross_brand_rivalry_at_ppv(void)
 {
-    Universe u;
-    UShow s;
-    int i, found = 0;
-    demo_universe(&u, 21);
-    u.r[1].intensity = 100; /* keep it hot so it survives to the PPV */
-    run_shows(&u, 8);       /* weeks 1-4 TV */
-    CHECK(u.slot == 2);
-    u.r[1].intensity = 100;
-    u_book_show(&u, &s);
-    for (i = 0; i < s.count; i++)
-        if (involves(&s.m[i], 12) && involves(&s.m[i], 1)) {
-            found = 1;
-            CHECK(u_stip_supported(s.m[i].format, s.m[i].stip));
+    uint32_t seed;
+    int booked = 0;
+    for (seed = 21; seed < 31; seed++) {
+        Universe u;
+        UShow s;
+        int i, found = 0, title = 0;
+        demo_universe(&u, seed);
+        u.r[1].intensity = 100; /* keep it hot so it survives to the PPV */
+        run_shows(&u, 8);       /* weeks 1-4 TV */
+        CHECK(u.slot == 2);
+        CHECK(u.r[1].a == 12 && u.r[1].b == 1);
+        u.r[1].intensity = 100;
+        u_book_show(&u, &s);
+        for (i = 0; i < s.count; i++) {
+            if (involves(&s.m[i], 12) && involves(&s.m[i], 1)) {
+                found = 1;
+                CHECK(u_stip_supported(s.m[i].format, s.m[i].stip));
+            }
+            if (s.m[i].title != U_NONE && (involves(&s.m[i], 12) || involves(&s.m[i], 1)))
+                title = 1;
         }
-    CHECK(found);
+        CHECK(found || title || u.w[12].injured_weeks || u.w[1].injured_weeks);
+        booked += found;
+    }
+    CHECK(booked >= 3);
 }
 
 static void test_injured_skip(void)
@@ -802,6 +837,98 @@ static void test_full_roster(void)
     CHECK(ok >= 40);                            /* (injuries can thin the division) */
 }
 
+static int rivalry_heat(const Universe *u, uint8_t a, uint8_t b)
+{
+    int i;
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        const URivalry *r = &u->r[i];
+        if (r->intensity && ((r->a == a && r->b == b) || (r->a == b && r->b == a)))
+            return r->intensity;
+    }
+    return 0;
+}
+
+static int by_name(const Universe *u, const char *name)
+{
+    int i;
+    for (i = 0; i < u->n_wrestlers; i++)
+        if (!strcmp(u->w[i].name, name)) return i;
+    return -1;
+}
+
+static int team_named(const Universe *u, const char *name, const char *a, const char *b)
+{
+    int i, x = by_name(u, a), y = by_name(u, b);
+    for (i = 0; i < u->n_teams; i++)
+        if (!strcmp(u->tm[i].name, name) &&
+            ((u->tm[i].a == x && u->tm[i].b == y) || (u->tm[i].a == y && u->tm[i].b == x)))
+            return i;
+    return -1;
+}
+
+/* Plan step 5: rivalries, allies and tag teams from the game's ALLY/ENEMY data */
+static void test_game_relations(void)
+{
+    Universe u, v;
+    uint8_t buf[U_SAVE_SIZE];
+    int i, n = 0, rock = 0, hhh = 0;
+    roster_universe(&u, 3);
+#define W(name) (uint8_t)by_name(&u, name)
+    /* tag teams: the game's partners, T & A (same valet, a rival in common),
+     * and the teams the game doesn't pair */
+    CHECK(team_named(&u, "Edge&Christian", "Edge", "Christian") >= 0);
+    CHECK(team_named(&u, "Hardy Boyz", "Matt Hardy", "Jeff Hardy") >= 0);
+    CHECK(team_named(&u, "Dudley Boyz", "D-Von", "Buh Buh Ray") >= 0);
+    CHECK(team_named(&u, "Too Cool", "G.M. Sexay", "Scotty") >= 0);
+    CHECK(team_named(&u, "Right to Censor", "Steven Richards", "Bull Buchanan") >= 0);
+    CHECK(team_named(&u, "T & A", "Test", "Albert") >= 0);
+    CHECK(team_named(&u, "APA", "Faarooq", "Bradshaw") >= 0);
+    CHECK(team_named(&u, "New Age Outlaws", "Road Dogg", "Mr. Ass") >= 0);
+    CHECK(team_named(&u, "Kaientai", "Taka Michinoku", "Funaki") >= 0);
+    CHECK(u.n_teams == 9);
+    CHECK(u_title_holder(&u, 1) == team_named(&u, "Edge&Christian", "Edge", "Christian"));
+    for (i = 0; i < u.n_teams; i++)          /* partners are close allies */
+        CHECK(u_ally_level(&u, u.tm[i].a, u.tm[i].b) >= U_ALLY_CLOSE);
+    /* valets and the game's other partners */
+    CHECK(u_ally_level(&u, W("Val Venis"), W("Trish Stratus")) == 90);
+    CHECK(u_ally_level(&u, W("Trish Stratus"), W("Test")) == 75);
+    CHECK(u_ally_level(&u, W("X-Pac"), W("Tori")) == 75);
+    CHECK(u_ally_level(&u, W("Eddie Guerrero"), W("Chyna")) == 90);
+    CHECK(u_ally_level(&u, W("Test"), W("Val Venis")) == 50);
+    CHECK(u_ally_level(&u, W("The Rock"), W("Triple H")) == 0);
+    /* rivalries: a mutual first rival is hottest; first rival hotter */
+    CHECK(rivalry_heat(&u, W("The Rock"), W("Triple H")) == 65);
+    CHECK(rivalry_heat(&u, W("Trish Stratus"), W("Lita")) == 65);
+    CHECK(rivalry_heat(&u, W("Kurt Angle"), W("Tazz")) > rivalry_heat(&u, W("Kurt Angle"), W("Rikishi")));
+    CHECK(rivalry_heat(&u, W("Kane"), W("Triple H")) > rivalry_heat(&u, W("Undertaker"), W("Kane")));
+    CHECK(rivalry_heat(&u, W("Mankind"), W("Triple H")) == 40);    /* (one man, three names) */
+    CHECK(rivalry_heat(&u, W("Steve Austin"), W("Vince McMahon")) == 0);  /* not a regular */
+    CHECK(rivalry_heat(&u, W("Essa Rios"), W("Lita")) == 0);       /* no intergender feuds */
+    for (i = 0; i < U_MAX_RIVALRIES; i++) {
+        const URivalry *r = &u.r[i];
+        if (!r->intensity) continue;
+        n++;
+        CHECK(u.w[r->a].role == U_ROLE_REGULAR && u.w[r->b].role == U_ROLE_REGULAR);
+        CHECK(u.w[r->a].gender == u.w[r->b].gender);
+        CHECK(u_ally_level(&u, r->a, r->b) < U_ALLY_CLOSE);
+        CHECK(strcmp(u.w[r->a].name, "Cactus Jack") && strcmp(u.w[r->b].name, "Mick Foley"));
+        CHECK(r->intensity >= 25 && r->intensity <= 65);
+        CHECK(i == 0 || !u.r[i - 1].intensity || u.r[i - 1].intensity >= r->intensity);
+        rock += r->a == W("The Rock") || r->b == W("The Rock");
+        hhh += r->a == W("Triple H") || r->b == W("Triple H");
+    }
+    CHECK(n == 67 && rock == 5 && hhh == 9);
+    /* allies survive a save */
+    CHECK(u_save(&u, buf, sizeof buf) == U_SAVE_SIZE);
+    CHECK(u_load(&v, buf, sizeof buf) == 0);
+    CHECK(u_ally_level(&v, W("Edge"), W("Christian")) == 90);
+    CHECK(u_ally_level(&v, W("Christian"), W("Edge")) == 90);
+    CHECK(u_add_ally(&u, W("Edge"), W("Edge"), 50) < 0);
+    CHECK(u_add_ally(&u, W("Edge"), W("Christian"), 40) >= 0);
+    CHECK(u_ally_level(&u, W("Edge"), W("Christian")) == 90);  /* (only raised) */
+#undef W
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -824,6 +951,7 @@ int main(void)
     test_royal_rumble();
     test_king_of_the_ring();
     test_full_roster();
+    test_game_relations();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;

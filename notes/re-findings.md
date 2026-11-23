@@ -522,3 +522,16 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   Edge with Christian, the Hardys / Dudleys / Too Cool with each other,
   Steven Richards with Bull Buchanan, Eddie Guerrero with Chyna, Triple H
   with Stephanie, X-Pac with Tori, Test / Val Venis / Albert with Trish).
+- Stables: Superstar Options "Change Stable" is the Superstar Select grid
+  (L / R pages) for moving wrestlers between pages, and "Stables Name"
+  renames pages: the game's "stables" are the select pages (default names
+  SUPERSTARS 1-7, LADIES, HIDDEN 1-2, EDIT 1-2), not factions - page 1
+  holds The Rock, Triple H and Steve Austin together. No faction data.
+- Bit layout of the packed record (MSB first): rival 1-3 are 12-bit
+  wrestler ids at bits 149, 161, 173; "accompanied by" at bit 185 (12
+  bits); 247 bits are read in all.
+- Universe use (step 5): host/roster.c REL[] is this data for numbers
+  1-64; rivalry heat = 15 + (weight a gives b + weight b gives a) / 2
+  with weights 50 / 30 / 20 (mutual Rival 1 = 65); mutual "accompanied by"
+  = ally 90, one-sided 75, same companion 50 (+20 with a rival in common);
+  men at ally 70+ form the starting tag teams.
