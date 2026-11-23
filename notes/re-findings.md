@@ -559,3 +559,42 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   Guerrero / Chyna in the game's data, Mr. Ass / Road Dogg written): its
   in-match use is the game's interference logic (not observed in short
   test matches).
+
+## The Universe save (2026-11-23)
+- No Mercy's flash save is its own log-structured file system (main code
+  0x80003D64-0x80004F4C, ROM = RAM - 0x7FFFF400): 128-byte pages = u16
+  previous page, u16 logical page (0x4000 = superblock), u32 checksum (XOR
+  of the page's words), 120 data bytes. The save image (RAM pointer
+  0x80062CC0, size 0x80062CC4 = 29040 bytes = 242 logical pages, up to 320)
+  is written page by page; a superblock (magic 0x00080721, the game's two
+  8-byte IDs, u64 sequence at +8) ends each save. Pages form a ring: write
+  pointer 0x80064510, chain head 0x8006450C / tail 0x8006450E; a sector is
+  erased when first written; incremental saves (0x80004918, changed pages
+  only - an unchanged image writes nothing) go on while within 4 sectors of
+  the head, else a full rewrite (0x80004618) from the sector after the tail
+  (up to 4 tries). Mount (0x800043E8) scans every page for the newest
+  superblock and follows the chain back (0x80004254). A blank flash is
+  formatted (0x80004C68: osFlashChipErase, then a superblock). Init
+  0x80004BB4 (osFlashInit once: flag 0x800436E0), save 0x80004E6C.
+  Helpers: 0x80003E90 page -> sector, 0x80003EA4 sector -> first page
+  ((s*128) % 1023), 0x80003EE4 sector distance from the head (8 sectors).
+- osFlash* (one caller each, all in that module): init 0x8002FF60, status
+  0x80030070, chip erase 0x80030170, sector erase 0x800302B0, write buffer
+  0x80030400, write array 0x800304A0, read array 0x800305F0. The game's IO
+  message 0x800644D0, queue 0x800644F0 (message 0x80064508).
+- The game's flash use is the whole chip (a ring over pages 0-1021), so the
+  ROM shrinks it to sectors 0-5 (pages 0-767; tools/build_rom.py
+  FLASH_PATCHES: the five 0x3FE limits -> 0x300, sector start % 767, 6
+  sectors, incremental within 3 sectors so a full rewrite (243 pages) still
+  fits in 2, format erases sectors 0-5 via the resident instead of the chip)
+  and the Universe has sectors 6-7: two copies in turn (n64/resident/
+  usave.c), data pages then a header page (magic 'NMUV', sequence, length,
+  FNV-1a), through the game's own osFlash routines. Verified: a fresh save
+  formats and saves in pages 0-243; ~330 forced game saves (test hook
+  mailbox 0x3C) wrapped the 768-page ring with full rewrites and no
+  failure, never touched pages 768+, and the game mounted the newest
+  superblock after a reboot; the Universe (and its card) loads back.
+- The ROM also has the Controller Pak file system (osPfs*, 0x80038C70-
+  0x8003BFFF, kept by a stub at 0x80005E78; never used by the game), the
+  Rumble Pak code (osMotorInit 0x80039A74) and Transfer Pak code
+  (0x80005000-0x80005530).

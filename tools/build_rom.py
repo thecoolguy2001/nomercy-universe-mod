@@ -89,6 +89,34 @@ def extract_entry(rom_path, out_path):
     open(out_path, "wb").write(rom[ENTRY_ROM:ENTRY_ROM + ENTRY_LEN])
 
 
+# The Universe save (notes/re-findings.md, "The Universe save"): No Mercy's
+# flash file system (a log of 128-byte pages, 0x80003E90-0x80004F4C) is
+# shrunk from a ring of 1022 pages over 8 sectors to 768 pages over sectors
+# 0-5, leaving sectors 6 and 7 (pages 768-1023) to the Universe. RAM
+# address, original word(s), new word(s); ROM = RAM - 0x7FFFF400.
+FLASH_RING = 0x300
+FLASH_PATCHES = [
+    (0x80004028, "284203fe", "28420300"),   # next page: wrap at 768 (slti v0,v0,0x300)
+    (0x800040A4, "2c8403fe", "2c840300"),   # write page: page < 768
+    (0x80004198, "2c4203fe", "2c420300"),   # read page: page < 768
+    (0x800044C0, "284203fe", "28420300"),   # mount: scan pages 0-767
+    (0x80004D38, "2e0203fe", "2e020300"),   # format: first good page < 768
+    (0x80003F20, "26110008", "26110006"),   # sector distance: 6 sectors
+    (0x800048A8, "28420004", "28420003"),   # incremental saves within 3 sectors
+    (0x80004C74, "0c00c05c", "0c10400e"),   # format: jal 0x80410038 (erase sectors
+                                            #  0-5 only), not osFlashChipErase
+    # sector -> first page: (s * 128) % 767 (was % 1023), 16 words
+    (0x80003EA4,
+     "3c038020" "34630803" "000425c0" "00041403" "00430018" "000427c3" "00003010"
+     "00c22821" "00052a43" "00a42823" "00051a80" "00651823" "00431023" "00021400"
+     "03e00008" "00021403",
+     "000411c0" "00021400" "00021403" "284102ff" "14200003" "00000000" "1000fffc"
+     "2442fd01" "03e00008" "00000000" "00000000" "00000000" "00000000" "00000000"
+     "00000000" "00000000"),
+]
+FLASH_FORMAT_ORIG = 0x0C00C05C              # (restored by the loader without the resident)
+
+
 def patch(rom_path, stub_path, payload_path, out_path, label_path=None, arenas_path=None):
     rom = load_rom(rom_path)
     stub = open(stub_path, "rb").read()
@@ -128,6 +156,12 @@ def patch(rom_path, stub_path, payload_path, out_path, label_path=None, arenas_p
     if rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] != TEXT_HOOK_ORIG:
         sys.exit("menu text call does not match the expected instruction")
     rom[TEXT_HOOK_ROM:TEXT_HOOK_ROM + 4] = TEXT_HOOK_NEW
+
+    for ram, orig, new in FLASH_PATCHES:
+        off, orig, new = ram - 0x7FFFF400, bytes.fromhex(orig), bytes.fromhex(new)
+        if len(orig) != len(new) or rom[off:off + len(orig)] != orig:
+            sys.exit(f"flash code at 0x{ram:08X} does not match the expected instructions")
+        rom[off:off + len(new)] = new
 
     if rom[SP_TABLE_ROM:SP_TABLE_ROM + 8] != SP_TABLE_ORIG:
         sys.exit("Single Play menu table entry does not match")

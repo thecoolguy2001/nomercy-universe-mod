@@ -6,6 +6,7 @@
 #   0x80410020  text-image hook         (ROM: 0x80009FFC -> j 0x80410020)
 #   0x80410028  Superstar Select picker init (RAM 0x801124D0, patched at run time)
 #   0x80410030  display list end        (ROM: 0x80002DE4 -> j 0x80410030)
+#   0x80410038  flash format, sectors 0-5 (ROM 0x5874: jal osFlashChipErase -> jal 0x80410038)
 # The game's return address is still in $ra in both cases.
 #include "../../build/n64/universe_label.h"
     .set noreorder
@@ -44,6 +45,11 @@ picker_init_entry:
     .globl dl_end_entry
 dl_end_entry:
     j       dl_end_hook
+    nop
+
+    .globl flash_format_entry
+flash_format_entry:
+    j       flash_format_game
     nop
 
 # 0x80002DE4(a0, a1 = display list position, a2, a3) writes the frame's

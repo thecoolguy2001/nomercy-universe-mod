@@ -13,6 +13,7 @@
 #include "../../engine/universe.h"
 #include "../../host/roster.h"
 #include "uscreen.h"
+#include "usave.h"
 
 /* Menu overlay draw_text(holder, str, x, y, alpha, style, flags).
  * x/y are in a 480x240 space (x is scaled to 640 on screen). */
@@ -37,6 +38,17 @@ static Universe U;
 static UShow    SHOW;
 static uint8_t  started, show_ready, cursor, top, view;  /* view 0 card, 1 results, 2 rankings */
 static uint8_t  rk_page, rk_top, rk_back;   /* rankings page, scroll, view to go back to */
+
+/* The save (usave.c): the universe and the card in play, written on the
+ * Universe screen after a change (a result, a new show) and when leaving */
+enum { SAVE_NONE, SAVE_SAVED, SAVE_LOADED, SAVE_FAILED, SAVE_OLD };
+static uint8_t  dirty, save_state, confirm_new;
+#define SAVE_MAGIC 0x4E4D5553u            /* 'NMUS' */
+#define SAVE_HEAD  16
+static uint8_t  save_buf[SAVE_HEAD + U_SAVE_SIZE + sizeof(UShow)] __attribute__((aligned(8)));
+
+static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static uint8_t  pending = U_NONE, pending_watch;    /* match being played/watched in the game */
 
 #define MAX_LINES 10
@@ -198,12 +210,60 @@ static void rumble_pickable_first(UMatch *m)
     }
 }
 
+static void save_now(void)
+{
+    unsigned i, n = SAVE_HEAD + U_SAVE_SIZE;
+    put32(save_buf, SAVE_MAGIC);
+    put32(save_buf + 4, U_SAVE_VERSION);
+    put32(save_buf + 8, sizeof(UShow));
+    save_buf[12] = show_ready;
+    save_buf[13] = cursor;
+    save_buf[14] = top;
+    save_buf[15] = 0;
+    if (u_save(&U, save_buf + SAVE_HEAD, U_SAVE_SIZE) != U_SAVE_SIZE) { save_state = SAVE_FAILED; return; }
+    if (show_ready)
+        for (i = 0; i < sizeof(UShow); i++) save_buf[n++] = ((const uint8_t *)&SHOW)[i];
+    save_state = usave_store(save_buf, (int)n) == 0 ? SAVE_SAVED : SAVE_FAILED;
+    dirty = 0;
+}
+
+/* The saved universe (and its card), if there is one of this version */
+static int load_saved(void)
+{
+    int n = usave_load(save_buf, (int)sizeof save_buf);
+    unsigned i;
+    if (n < SAVE_HEAD + U_SAVE_SIZE || get32(save_buf) != SAVE_MAGIC) return 0;
+    if (get32(save_buf + 4) != U_SAVE_VERSION ||
+        u_load(&U, save_buf + SAVE_HEAD, U_SAVE_SIZE) != 0) {
+        save_state = SAVE_OLD;                    /* (an earlier version's) */
+        return 0;
+    }
+    show_ready = 0;
+    if (save_buf[12] && get32(save_buf + 8) == sizeof(UShow) &&
+        n >= (int)(SAVE_HEAD + U_SAVE_SIZE + sizeof(UShow))) {
+        for (i = 0; i < sizeof(UShow); i++)
+            ((uint8_t *)&SHOW)[i] = save_buf[SAVE_HEAD + U_SAVE_SIZE + i];
+        show_ready = 1;
+        cursor = save_buf[13] < SHOW.count ? save_buf[13] : 0;
+        top = save_buf[14];
+    }
+    save_state = SAVE_LOADED;
+    return 1;
+}
+
+static void new_universe(uint32_t seed)
+{
+    roster_universe(&U, seed | 1);
+    champions_from_game();
+    show_ready = 0;
+    dirty = 1;
+}
+
 void us_enter(uint32_t seed)
 {
     int i;
     if (!started) {
-        roster_universe(&U, seed | 1);
-        champions_from_game();
+        if (!load_saved()) new_universe(seed);
         started = 1;
     }
     if (!show_ready) refresh_unlocks();
@@ -217,6 +277,7 @@ void us_enter(uint32_t seed)
         show_ready = 1;
         cursor = 0;
         top = 0;
+        dirty = 1;
     }
     view = 0;
 }
@@ -288,6 +349,7 @@ static void finish_show(void)
     }
     show_ready = 0;
     view = 1;
+    dirty = 1;
 }
 
 /* Which game slot holds which wrestler of the match: Superstar Select fills
@@ -358,14 +420,36 @@ static void match_rules(const UMatch *m, uint8_t *r)
     r[10] = m->stip == U_STIP_IRONMAN && m->format == U_FMT_TAG;  /* game default */
 }
 
-/* Rankings pages: men, women, tag teams, one per belt, injuries */
-static int rk_pages(void) { return 3 + U.n_titles + 1; }
+/* Rankings pages: men, women, tag teams, one per belt, injuries, the
+ * Universe (its save, New Universe) */
+static int rk_pages(void) { return 3 + U.n_titles + 2; }
+static int rk_universe_page(void) { return rk_page == rk_pages() - 1; }
 static int rk_lines(void);
+
+static uint32_t count_register(void)
+{
+    uint32_t c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
 
 int us_input(uint16_t pressed)
 {
+    if (dirty) save_now();                /* (a result or a new show: saved now) */
     if (view == 2) {                      /* rankings */
         int n = rk_lines();
+        if (rk_universe_page() && (pressed & B_START)) {
+            if (!confirm_new) {
+                confirm_new = 1;              /* START again to confirm */
+                return 1;
+            }
+            new_universe(count_register());   /* a new universe, saved at once */
+            confirm_new = 0;
+            us_enter(0);
+            save_now();
+            return 1;
+        }
+        if (pressed) confirm_new = 0;
         if (pressed & B_B) view = rk_back;
         if (pressed & (B_L | B_R)) {
             rk_page = (uint8_t)((rk_page + ((pressed & B_R) ? 1 : rk_pages() - 1)) % rk_pages());
@@ -381,7 +465,10 @@ int us_input(uint16_t pressed)
         rk_top = 0;
         return 1;
     }
-    if (pressed & B_B) return 0;
+    if (pressed & B_B) {                  /* leaving: whatever is new is saved */
+        save_now();
+        return 0;
+    }
     if (view == 1) {                      /* results -> next card */
         if (pressed & (B_A | B_START)) us_enter(0);
         return 1;
@@ -555,6 +642,7 @@ void us_match_result(const UGameResult *r)
     int i, n, first, win = -1;
     uint8_t method;
     if (pending == U_NONE) return;
+    dirty = 1;                            /* (saved when the Universe screen is back) */
     m = &SHOW.m[pending];
     if (m->format == U_FMT_RUMBLE) {
         /* the winner by wrestler number; someone the player picked instead
@@ -706,7 +794,8 @@ static const char *rk_title(void)
     if (rk_page == 1) return "Women";
     if (rk_page == 2) return "Tag Teams";
     if (rk_page < 3 + U.n_titles) return U.t[rk_page - 3].name;
-    return "Injuries";
+    if (rk_page == 3 + U.n_titles) return "Injuries";
+    return "Universe";
 }
 
 /* the singles title a wrestler holds, or 0 */
@@ -769,7 +858,7 @@ static int rk_lines(void)
             if (held) { s_add(&s, " - "); s_add(&s, held); }
         }
         if (!k) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No contenders"); }
-    } else {                                              /* injuries */
+    } else if (rk_page == 3 + U.n_titles) {               /* injuries */
         k = u_injuries(&U, ids, U_MAX_WRESTLERS);
         for (i = 0; i < k && n < RK_MAX; i++) {
             const UWrestler *w = &U.w[ids[i]];
@@ -780,6 +869,18 @@ static int rk_lines(void)
             s_add(&s, w->injured_weeks == 1 ? " week" : " weeks");
         }
         if (!k) { s_init(&s, rk_text[n++], LINE_LEN); s_add(&s, "No injuries"); }
+    } else {                                              /* the Universe */
+        static const char *const STATE[] = {
+            "Not saved yet", "Saved on the cartridge", "Loaded from the cartridge",
+            "Could not save on the cartridge", "Older version's save: new Universe"};
+        s_init(&s, rk_text[n++], LINE_LEN);
+        s_add(&s, "Week ");
+        s_num(&s, U.week);
+        s_init(&s, rk_text[n++], LINE_LEN);
+        s_add(&s, STATE[save_state]);
+        s_init(&s, rk_text[n++], LINE_LEN);
+        s_init(&s, rk_text[n++], LINE_LEN);
+        s_add(&s, confirm_new ? "Press $e again to start over" : "$e New Universe");
     }
     return n;
 }

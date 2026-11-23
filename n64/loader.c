@@ -29,6 +29,10 @@ extern const uint32_t resident_image_size;
 #define DLEND_HOOK_ADDR 0x80002DE4u
 #define DLEND_ORIG_0    0x27BDFFE8u  /* addiu sp, sp, -0x18 */
 #define DLEND_ORIG_1    0x00A04821u  /* move  t1, a1 */
+/* No Mercy's flash format; the ROM has "jal 0x80410038" (the resident
+ * erases sectors 0-5 only, keeping the Universe save) */
+#define FORMAT_CALL_ADDR 0x80004C74u
+#define FORMAT_CALL_ORIG 0x0C00C05Cu  /* jal osFlashChipErase */
 
 /* Arena pictures (tools/make_arenas.py), stored after the payload in ROM;
  * copied next to the resident module (where it expects them). */
@@ -95,6 +99,7 @@ static void remove_hook(void)
     volatile uint32_t *dhook = (volatile uint32_t *)(0xA0000000u | (DLEND_HOOK_ADDR & 0x1FFFFFFFu));
     dhook[0] = DLEND_ORIG_0;
     dhook[1] = DLEND_ORIG_1;
+    *(volatile uint32_t *)(0xA0000000u | (FORMAT_CALL_ADDR & 0x1FFFFFFFu)) = FORMAT_CALL_ORIG;
 }
 
 void n64_main(void)

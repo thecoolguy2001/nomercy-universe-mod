@@ -808,6 +808,32 @@ uint32_t *dl_end(uint32_t *g)
     return g;
 }
 
+/* Test: No Mercy's own save (0x80004E6C, its flash file system) run many
+ * times, to exercise its ring on the shrunk flash (tools/build_rom.py) */
+#define GAME_SAVE 0x80004E6Cu
+typedef int (*game_save_fn)(void);
+static void test_game_saves(volatile Mailbox *mb)
+{
+    uint32_t n = mb->test_flash, i;
+    mb->test_flash = 0;
+    if (RAM32(GAME_SAVE) != 0x3C028006u || RAM32(GAME_SAVE + 4) != 0x8C422CC0u) {
+        mb->test_flash_fail = 0xFFFFFFFFu;
+        return;
+    }
+    {   /* a byte of the save image's last page changes each time (an
+         * unchanged image writes nothing), and is put back at the end */
+        uint32_t img = RAM32(0x80062CC0u), size = RAM32(0x80062CC4u);
+        if (img < 0x80000000u || img >= 0x80800000u || size == 0 || size > 0x10000) {
+            mb->test_flash_fail = 0xFFFFFFFEu;
+            return;
+        }
+        for (i = 0; i < n + (n & 1); i++) {
+            RAM8(img + size - 1) ^= 0x01;
+            if (((game_save_fn)GAME_SAVE)() != 0) mb->test_flash_fail++;
+        }
+    }
+}
+
 static void enter_universe(void)
 {
     volatile Mailbox *mb = MAILBOX;
@@ -846,6 +872,7 @@ static void universe_frame(OSContPad *pads)
         uint16_t btn = pads[0].button;
         uint16_t pressed = btn & (uint16_t)~prev_buttons;
         prev_buttons = btn;
+        if (mb->test_flash) test_game_saves(mb);
         if (mb->test_select) {             /* test hook: let the game act on the item */
             mb->test_select = 0;
             test_hold = 4;

@@ -132,3 +132,12 @@ Test each step in the debug emulator, install, tell the user what to try.
 - Multi Play Ironman Match (mode 0x0F): Single, Tag, Triple Threat, Handicap.
 - Multi Play Guest Referee (mode 0x0D): Single, Triple Threat, Handicap (no Tag).
 - So: Cage only for singles; Guest Referee never for tag matches.
+
+## After the plan (user, 2026-11-23)
+Order: 1. save the Universe in the cartridge save (with a "New Universe"
+option; user, 2026-11-23: the cartridge flash, not a Controller Pak - the
+user has no No Mercy save on this ROM); 2. created wrestlers in the Universe, ratings that change over
+time, run-ins in played matches counted; 3. Rankings pages for feuds,
+allies / tag teams and title history (no calendar); 4. then a test pass
+in the game (in-match run-ins, Survivor Series makeshift teams, a full
+40-man Rumble with fill-ins, tag / triple Ironman falls).
