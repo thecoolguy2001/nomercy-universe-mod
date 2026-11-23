@@ -21,6 +21,7 @@ typedef struct {
     uint8_t n_slots;        /* picks on Superstar Select (a guest referee is the first) */
     uint8_t tag;            /* tag partners are picked back to back (slots 1 and 3) */
     uint8_t wrestler[4];    /* No Mercy wrestler number per slot */
+    uint8_t attire[4];      /* and attire ("Type"): some numbers hold two characters */
     uint8_t human[4];       /* per slot: 1 = the player's controller, 0 = CPU */
     uint8_t rules[US_RULES];/* the RULES tab row the match is played with */
     int     belt;           /* game belt on the line, -1 = none */
@@ -36,10 +37,12 @@ typedef struct {
     uint8_t rumble_winner;  /* Royal Rumble: the winner's wrestler number (0 = unknown) */
     uint8_t result[4];      /* game result byte per slot: 4 = won */
     uint8_t game_n[4];      /* No Mercy wrestler numbers that actually wrestled (0 = unknown) */
+    uint8_t game_attire[4]; /* their attires */
     uint8_t method;         /* U_WIN_* read from the game */
     uint8_t falls[4];       /* Ironman: falls per slot */
 } UGameResult;
 /* Called again after a rematch, replacing the result. */
 void us_match_result(const UGameResult *r);
 void us_match_closed(void);            /* back on the menus: match finished with */
+int  game_pickable(uint8_t number);    /* (resident) Superstar Select can pick him */
 #endif

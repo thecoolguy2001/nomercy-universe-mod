@@ -1,8 +1,8 @@
 CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -pedantic -Werror
 
-ENGINE   = engine/universe.c host/demo_roster.c
-HEADERS  = engine/universe.h host/demo_roster.h
+ENGINE   = engine/universe.c host/demo_roster.c host/roster.c
+HEADERS  = engine/universe.h host/demo_roster.h host/roster.h
 
 # ---- N64 build (clang + lld, no external SDK) ----
 ROM_IN     = original/nomercy_us_v10.z64
@@ -15,7 +15,8 @@ N64_FLAGS  = --target=mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls -fno-
 N64_OBJS   = build/n64/crt0.o build/n64/loader.o build/n64/ui.o build/n64/hw.o \
              build/n64/libc.o build/n64/universe.o build/n64/demo_roster.o
 RES_OBJS   = build/n64/res_entry.o build/n64/res_resident.o build/n64/res_uscreen.o \
-             build/n64/res_libc.o build/n64/universe.o build/n64/demo_roster.o
+             build/n64/res_libc.o build/n64/universe.o build/n64/demo_roster.o \
+             build/n64/roster.o
 PAYLOAD_CART = 0x11FB0000
 
 all: build/universe build/test_universe

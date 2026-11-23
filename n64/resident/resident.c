@@ -96,6 +96,8 @@ static int universe_highlighted(void);
 #define B_Z      0x2000
 #define B_DLEFT  0x0200
 #define B_DRIGHT 0x0100
+#define B_CRIGHT 0x0001
+#define B_CLEFT  0x0002
 
 /* Exhibition settings (menu overlay data) */
 #define EX_MATCH_CURSOR   0x8015A0EDu    /* MATCH tab item (USetup.match_item) */
@@ -147,8 +149,8 @@ static const uint32_t EX_ARENA[] = { 0x80159E7Du, 0x80159656u, 0x8015971Eu, 0x80
 /* Superstar Select starts its cursor from these (saved from the last visit) */
 #define SS_SAVED_CELL     0x800AAAB4u    /* s16 grid cell 0-8 */
 #define SS_SAVED_PAGE     0x800AAAB6u    /* u16 page */
-#define SS_PAGES          0x80047150u    /* [page][12] wrestler numbers, 9 cells used */
-#define SS_SUPERSTAR_PAGES 5
+#define SS_TYPE           0x800AAAB9u    /* attire ("Type"): set before a picker starts,
+                                            follows C-Right / C-Left on the screen */
 
 static uint8_t dstate, dwatch, seen_result, dresults, dlast_screen;
 static USetup  dsetup;                 /* the match being staged */
@@ -179,26 +181,75 @@ static uint8_t game_number(uint16_t id)   /* the reverse; 0 = unknown */
     return 0;
 }
 
+/* Superstar Select's pages (live records at 0x800AAEC0, 56 bytes each:
+ * up to 9 cells of u16 wrestler id + u16 number, u16 count at +0x24, then
+ * the page name): 0-4 SUPERSTARS, 5 LADIES, 6-7 HIDDEN, 8-9 SUPERSTARS 6-7,
+ * 10-11 EDIT. Pages nobody on it can be picked from are skipped by R / L. */
+#define SS_PAGE_REC(p)    (0x800AAEC0u + 56u * (p))
+#define SS_PAGE_COUNT     12
+
 /* Superstar Select opens on the page and cell of wrestler n */
 static int find_cell(uint8_t n, unsigned *page, unsigned *cell)
 {
     unsigned p, c;
-    for (p = 0; p < SS_SUPERSTAR_PAGES; p++)
-        for (c = 0; c < 9; c++)
-            if (RAM8(SS_PAGES + 12u * p + c) == n) {
+    for (p = 0; p < SS_PAGE_COUNT; p++) {
+        unsigned count = RAM16(SS_PAGE_REC(p) + 0x24);
+        for (c = 0; c < count && c < 9; c++)
+            if (RAM16(SS_PAGE_REC(p) + 4u * c + 2u) == n) {
                 *page = p;
                 *cell = c;
                 return 1;
             }
+    }
     return 0;
 }
 
-static void preset_cursor(uint8_t n)
+/* Superstar Select's own test (menu overlay, checked before use): can the
+ * wrestler be picked? Hidden wrestlers are locked until the save unlocks
+ * them (Smackdown Mall). */
+#define SS_PICKABLE       0x801385FCu
+typedef int (*pickable_fn)(int id);
+
+int game_pickable(uint8_t n)
+{
+    if (RAM32(SS_PICKABLE) != 0x27BDFFE8u || RAM32(SS_PICKABLE + 4) != 0xAFB00010u ||
+        RAM32(SS_PICKABLE + 8) != 0xAFBF0014u)
+        return 1;                          /* (menus not loaded: assume so) */
+    return ((pickable_fn)SS_PICKABLE)(game_id(n)) != 0;
+}
+
+static void preset_cursor(uint8_t n, uint8_t attire)
 {
     unsigned p, c;
     if (!find_cell(n, &p, &c)) return;
     RAM16(SS_SAVED_PAGE) = (uint16_t)p;
     RAM16(SS_SAVED_CELL) = (uint16_t)c;
+    RAM8(SS_TYPE) = attire;
+}
+
+/* The attire of the pick being made: once the cursor is on the wrestler,
+ * C-Right / C-Left until the Type matches (once per pick, so the player
+ * can still change it) */
+static uint8_t dtype_slot = 0xFF, dtype_tries;
+static uint32_t dtype_next;
+
+static void adjust_type(uint8_t screen, int filled)
+{
+    uint8_t want, have;
+    if ((screen != SCREEN_SELECT && screen != SCREEN_SELECT_2) || filled >= dsetup.n_slots) return;
+    if (dtype_slot != filled) {
+        dtype_slot = (uint8_t)filled;
+        dtype_tries = 0;
+        dtype_next = frames + 40;              /* let the cursor settle */
+        return;
+    }
+    if (dtype_tries >= 4 || frames < dtype_next) return;
+    want = dsetup.attire[filled];
+    have = RAM8(SS_TYPE);
+    if (have == want) { dtype_tries = 4; return; }
+    press(want > have ? B_CRIGHT : B_CLEFT);
+    dtype_tries++;
+    dtype_next = frames + 20;
 }
 
 /* Tag partners are picked by the same picker straight after each other
@@ -280,7 +331,7 @@ void ss_picker_init(int picker)
     if (picker != PICKER_SIDE1 && picker != PICKER_SIDE1 + 1) return;
     while (slot < dsetup.n_slots && RAM8(SETUP_SLOT(slot)) != 0xFF) slot++;
     if ((dstate == D_ROUTE || dstate == D_SELECT) && slot < dsetup.n_slots)
-        preset_cursor(dsetup.wrestler[slot]);
+        preset_cursor(dsetup.wrestler[slot], dsetup.attire[slot]);
 }
 
 static void set_player_mode(void)
@@ -384,7 +435,8 @@ static void director_start(int watch)
     dfilled = 0;
     dmove = 0;
     darena = (uint8_t)us_show_arena();
-    preset_cursor(dsetup.wrestler[0]);
+    preset_cursor(dsetup.wrestler[0], dsetup.attire[0]);
+    dtype_slot = 0xFF;
     RAM8(UNIVERSE_ITEM_MODE) = dsetup.mode;      /* Exhibition, Ladder, Ironman, ... */
     us_cover(1);
     press(B_A);
@@ -410,6 +462,13 @@ static void actual_wrestlers(uint8_t n[4])
     int s;
     for (s = 0; s < 4; s++)
         n[s] = s < dsetup.n_slots ? game_number(*(volatile uint16_t *)SETUP_SLOT(s)) : 0;
+}
+
+/* and their attires (setup slot + 2) */
+static void actual_attires(uint8_t a[4])
+{
+    int s;
+    for (s = 0; s < 4; s++) a[s] = s < dsetup.n_slots ? (uint8_t)(RAM8(SETUP_SLOT(s) + 2) & 3) : 0;
 }
 
 /* How the match ended, from the finish flags the result screen shows
@@ -528,6 +587,7 @@ static void director_tick(void)
         write_rumble_order();
         if (backed_out()) break;
         move_partner_cursor(screen);
+        if (!dmove) adjust_type(screen, slots_filled());
         if (screen == SCREEN_MATCH) {
             dt0 = frames;
             dstate = D_INTRO;
@@ -582,6 +642,7 @@ static void director_tick(void)
                 dlast.method = won ? game_method(f) : U_WIN_DRAW;
                 if (!won) for (i = 0; i < 4; i++) dlast.result[i] = 0;
                 actual_wrestlers(dlast.game_n);
+                actual_attires(dlast.game_attire);
                 dlast.rumble_winner = 0;
                 for (i = 0; i < 4 && won; i++)
                     if (dlast.result[i] == 4) dlast.rumble_winner = game_number(dlast_id[i]);

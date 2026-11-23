@@ -19,6 +19,7 @@
 #include <string.h>
 #include "../engine/universe.h"
 #include "demo_roster.h"
+#include "roster.h"
 
 static const char *BRAND[] = {"Raw", "SmackDown"};
 
@@ -75,8 +76,7 @@ static void print_status(const Universe *u)
     for (i = 0; i < u->n_titles; i++) {
         const UTitle *t = &u->t[i];
         uint8_t h = u_title_holder(u, (uint8_t)i);
-        printf("  %-16s %-9s %s\n", t->name, BRAND[t->brand],
-               h == U_NONE ? "(vacant)" : holder_name(u, t, h));
+        printf("  %-16s %s\n", t->name, h == U_NONE ? "(vacant)" : holder_name(u, t, h));
         for (k = t->reign_count; k > 0 && t->reign_count - k < U_MAX_REIGNS; k--) {
             const UReign *r = &t->history[(k - 1) % U_MAX_REIGNS];
             printf("      #%-2d %-16s wk %u-", k, holder_name(u, t, r->holder), r->won_week);
@@ -86,9 +86,9 @@ static void print_status(const Universe *u)
             printf(" defenses: %u\n", r->defenses);
         }
     }
-    for (b = 0; b < U_BRAND_COUNT; b++) {
-        n = u_rankings(u, (uint8_t)b, rank, U_MAX_WRESTLERS);
-        printf("\n== %s rankings ==\n", BRAND[b]);
+    for (b = 0; b < 2; b++) {                 /* no brand split: men, women */
+        n = u_division_rankings(u, b ? U_DIV_WOMEN : U_DIV_MEN, rank, U_MAX_WRESTLERS);
+        printf("\n== %s ==\n", b ? "Women" : "Men");
         for (i = 0; i < n; i++) {
             const UWrestler *w = &u->w[rank[i]];
             printf("  %2d. %-16s %s  %3u-%-3u mom %+4d%s\n", i + 1, w->name,
@@ -100,8 +100,7 @@ static void print_status(const Universe *u)
     printf("\n== Tag teams ==\n");
     for (i = 0; i < n; i++) {
         const UTeam *t = &u->tm[rank[i]];
-        printf("  %2d. %-16s %-9s %3u-%-3u\n", i + 1, t->name,
-               BRAND[u->w[t->a].brand], t->wins, t->losses);
+        printf("  %2d. %-16s %3u-%-3u\n", i + 1, t->name, t->wins, t->losses);
     }
     printf("\n== Rivalries ==\n");
     for (i = 0, k = 0; i < U_MAX_RIVALRIES; i++) {
@@ -241,7 +240,7 @@ int main(int argc, char **argv)
 
     if (argc >= 3 && !strcmp(cmd, "new")) {
         uint32_t seed = argc >= 4 ? (uint32_t)strtoul(argv[3], 0, 0) : 2000u;
-        demo_universe(&u, seed);
+        roster_universe(&u, seed);
         if (save_file(argv[2], &u)) return 1;
         printf("New universe saved to %s (%d bytes, seed %u)\n", argv[2], U_SAVE_SIZE, seed);
         print_status(&u);

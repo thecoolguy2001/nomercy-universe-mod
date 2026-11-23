@@ -17,12 +17,12 @@
 #include <stdint.h>
 
 #define U_MAX_WRESTLERS  80  /* the whole game roster fits (plan step 5) */
-#define U_MAX_TEAMS      8
-#define U_MAX_TITLES     6
+#define U_MAX_TEAMS      16
+#define U_MAX_TITLES     8   /* the game's 7 belts */
 #define U_MAX_REIGNS     8   /* title history kept per title (ring buffer) */
-#define U_MAX_RIVALRIES  8
+#define U_MAX_RIVALRIES  16
 #define U_MAX_MATCHES    20  /* King of the Ring PPV: 15 tournament matches + 2 */
-#define U_WEEKLY_MATCHES 6
+#define U_WEEKLY_MATCHES 7
 #define U_PPV_MATCHES    8
 #define U_PPV_EVERY      4   /* a PPV closes every 4th week */
 #define U_NAME_LEN       16  /* includes terminating zero */
@@ -36,6 +36,11 @@ enum { U_BRAND_RAW = 0, U_BRAND_SMACKDOWN = 1, U_BRAND_COUNT = 2 };
 enum { U_FACE = 0, U_HEEL = 1 };
 enum { U_SHOW_WEEKLY = 0, U_SHOW_PPV = 1 };
 enum { U_TITLE_SINGLES = 0, U_TITLE_TAG = 1 };
+enum { U_MALE = 0, U_FEMALE = 1 };
+/* Who a singles title is for: men; women; light men (game weight up to
+ * U_LIGHT_LBS). No brand split (2000): one roster, any title on any show. */
+enum { U_DIV_MEN = 0, U_DIV_WOMEN = 1, U_DIV_LIGHT = 2 };
+#define U_LIGHT_LBS 220
 /* A match is a format plus a stipulation (notes/universe-plan.md). */
 enum {
     U_FMT_SINGLE = 0,       /* 1 vs 1 */
@@ -86,6 +91,11 @@ typedef struct {
     uint8_t  injured_weeks; /* 0 = healthy */
     uint8_t  active;        /* 0 = released / retired */
     uint8_t  role;          /* U_ROLE_* */
+    uint8_t  gender;        /* U_MALE / U_FEMALE */
+    uint8_t  game_attire;   /* No Mercy attire ("Type") that is this wrestler */
+    uint8_t  persona;       /* 0, or a group of one man's characters (Mankind,
+                               Cactus Jack, Mick Foley): one of them per show */
+    uint16_t weight;        /* lbs as the game has it, 0 = not given */
     uint16_t wins;
     uint16_t losses;
 } UWrestler;
@@ -112,6 +122,8 @@ typedef struct {
     uint8_t  active;
     uint8_t  vacant;
     uint8_t  reign_count;   /* total reigns ever (history wraps at U_MAX_REIGNS) */
+    uint8_t  division;      /* U_DIV_* (singles titles) */
+    uint16_t last_week;     /* week of its last title match */
     UReign   history[U_MAX_REIGNS];
 } UTitle;
 
@@ -119,6 +131,7 @@ typedef struct {
     uint8_t a, b;           /* wrestler ids (rivalries are singles feuds) */
     uint8_t intensity;      /* 0 = inactive, 100 = red hot */
     uint8_t weeks;          /* shows the rivalry has been featured on */
+    uint16_t last_show;     /* 4 * week + slot of the show it was last on */
 } URivalry;
 
 typedef struct {
@@ -175,23 +188,30 @@ typedef struct {
     URivalry  r[U_MAX_RIVALRIES];
 } Universe;
 
-#define U_SAVE_VERSION 4      /* bumped when the layout changes */
+#define U_SAVE_VERSION 6      /* bumped when the layout changes */
 /* Fixed save size so it can be given a fixed region of save memory. */
 #define U_SAVE_HEADER_BYTES   16
-#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 12)
+#define U_SAVE_WRESTLER_BYTES (U_NAME_LEN + 17)
 #define U_SAVE_TEAM_BYTES     (U_NAME_LEN + 7)
-#define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 5 + U_MAX_REIGNS * 6)
+#define U_SAVE_TITLE_BYTES    (U_NAME_LEN + 8 + U_MAX_REIGNS * 6)
 #define U_SAVE_SIZE (U_SAVE_HEADER_BYTES \
                      + U_MAX_WRESTLERS * U_SAVE_WRESTLER_BYTES \
                      + U_MAX_TEAMS * U_SAVE_TEAM_BYTES \
                      + U_MAX_TITLES * U_SAVE_TITLE_BYTES \
-                     + U_MAX_RIVALRIES * 4 + 2)
+                     + U_MAX_RIVALRIES * 6 + 2)
 
 /* ---- setup / roster management ---- */
 void    u_init(Universe *u, uint32_t seed);
 int     u_add_wrestler(Universe *u, const char *name, uint8_t game_slot,
                        uint8_t brand, uint8_t align, uint8_t overall);
 int     u_add_fillin(Universe *u, const char *name, uint8_t game_slot, uint8_t overall);
+/* game details of a wrestler: attire ("Type"), gender, weight in lbs (0 = none) */
+int     u_set_game_details(Universe *u, uint8_t id, uint8_t attire, uint8_t gender,
+                           uint16_t weight);
+int     u_set_division(Universe *u, uint8_t title, uint8_t division);
+int     u_set_persona(Universe *u, uint8_t id, uint8_t persona);
+/* a new universe's champion (replaces the first reign; team id for tag titles) */
+int     u_set_champion(Universe *u, uint8_t title, uint8_t holder);
 int     u_add_team(Universe *u, const char *name, uint8_t a, uint8_t b);
 int     u_add_title(Universe *u, const char *name, uint8_t brand, uint8_t kind,
                     uint8_t holder);
@@ -206,6 +226,9 @@ uint8_t u_title_holder(const Universe *u, uint8_t title);
 int     u_score(const UWrestler *w);
 int     u_team_score(const Universe *u, uint8_t team);
 int     u_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
+/* regular wrestlers who may hold a title of that division, best first */
+int     u_division_rankings(const Universe *u, uint8_t division, uint8_t *out, int max);
+int     u_eligible(const Universe *u, uint8_t id, uint8_t division);
 int     u_team_rankings(const Universe *u, uint8_t brand, uint8_t *out, int max);
 uint32_t u_rand(Universe *u, uint32_t n);
 int     u_ppv_index(const Universe *u);  /* 0 Royal Rumble .. 11 Armageddon (next PPV) */

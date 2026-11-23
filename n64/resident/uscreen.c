@@ -7,7 +7,7 @@
  * Results view: headlines of the show, A -> next show.
  */
 #include "../../engine/universe.h"
-#include "../../host/demo_roster.h"
+#include "../../host/roster.h"
 #include "uscreen.h"
 
 /* Menu overlay draw_text(holder, str, x, y, alpha, style, flags).
@@ -104,6 +104,33 @@ static void small(void *holder, const char *s, int y) { text_scaled(holder, s, y
 
 /* ---- public ---- */
 
+/* A save whose own champions table has belts on it starts the universe
+ * with those champions (u16 table at 0x800A53E2 + 0x34 * belt: wrestler
+ * number, then the tag partner; 0 = none) */
+#define GAME_CHAMPIONS 0x800A53E2u
+static uint8_t universe_wrestler(uint8_t game_n, uint8_t attire);
+
+static void champions_from_game(void)
+{
+    int b, k;
+    for (b = 0; b < 7 && b < U.n_titles; b++) {
+        uint8_t n0 = *(volatile uint8_t *)(GAME_CHAMPIONS + 0x34u * (unsigned)b);
+        uint8_t n1 = *(volatile uint8_t *)(GAME_CHAMPIONS + 0x34u * (unsigned)b + 1u);
+        uint8_t a, c;
+        if (!n0) continue;
+        a = universe_wrestler(n0, 0);
+        if (a == U_NONE) continue;
+        if (U.t[b].kind != U_TITLE_TAG) {
+            if (u_eligible(&U, a, U.t[b].division)) u_set_champion(&U, (uint8_t)b, a);
+            continue;
+        }
+        c = universe_wrestler(n1, 0);
+        for (k = 0; k < U.n_teams && c != U_NONE; k++)
+            if ((U.tm[k].a == a && U.tm[k].b == c) || (U.tm[k].a == c && U.tm[k].b == a))
+                u_set_champion(&U, (uint8_t)b, (uint8_t)k);
+    }
+}
+
 static uint32_t test_stip, test_rumble;
 void us_test_stip(uint32_t stip) { test_stip = stip; }
 void us_test_rumble(uint32_t n) { test_rumble = n; }
@@ -132,13 +159,47 @@ static void force_stip(void)
     }
 }
 
+/* Wrestlers the save hasn't unlocked yet (hidden ones) are left out of
+ * booking until it has; Royal Rumble fill-ins come in through the entry
+ * list and need no unlocking. */
+static void refresh_unlocks(void)
+{
+    int i;
+    for (i = 0; i < U.n_wrestlers; i++) {
+        int can;
+        if (U.w[i].role != U_ROLE_REGULAR) continue;
+        can = game_pickable(U.w[i].game_slot);
+        if (!can && U.w[i].active) u_set_active(&U, (uint8_t)i, 0);
+        else if (can && !U.w[i].active) u_set_active(&U, (uint8_t)i, 1);
+    }
+}
+
+/* The first four Rumble entrants are picked on Superstar Select: a fill-in
+ * there swaps places with the next regular */
+static void rumble_pickable_first(UMatch *m)
+{
+    int i, j;
+    for (i = 0; i < 4 && i < m->n_entrants; i++) {
+        if (U.w[m->entrant[i]].role == U_ROLE_REGULAR) continue;
+        for (j = 4; j < m->n_entrants; j++)
+            if (U.w[m->entrant[j]].role == U_ROLE_REGULAR) {
+                uint8_t t = m->entrant[i];
+                m->entrant[i] = m->entrant[j];
+                m->entrant[j] = t;
+                break;
+            }
+    }
+}
+
 void us_enter(uint32_t seed)
 {
     int i;
     if (!started) {
-        demo_universe(&U, seed | 1);
+        roster_universe(&U, seed | 1);
+        champions_from_game();
         started = 1;
     }
+    if (!show_ready) refresh_unlocks();
     if (!show_ready) {
         u_book_show(&U, &SHOW);
         force_stip();
@@ -287,6 +348,7 @@ int us_input(uint16_t pressed)
         playable(&SHOW.m[cursor], !(pressed & B_R))) {
         pending = cursor;
         pending_watch = (pressed & B_R) ? 0 : 1;
+        if (SHOW.m[cursor].format == U_FMT_RUMBLE) rumble_pickable_first(&SHOW.m[cursor]);
         return 2;                         /* resident launches the real match */
     }
     if (pressed & B_START) {
@@ -300,10 +362,13 @@ int us_input(uint16_t pressed)
 
 int us_pending_watch(void) { return pending_watch; }
 
-/* No Mercy belt for each Universe title (demo roster order: WWF, IC, Tag,
- * European); the game's belts are 0 WWF, 1 Tag, 2 IC, 3 European,
- * 4 Hardcore, 5 Light Heavyweight, 6 Women's. */
-static const int8_t GAME_BELT[] = { 0, 2, 1, 3, -1, -1 };
+/* Universe titles are in No Mercy's belt order: 0 WWF, 1 Tag, 2 IC,
+ * 3 European, 4 Hardcore, 5 Light Heavyweight, 6 Women's. */
+#define GAME_BELTS 7
+
+/* No Mercy wrestler number / attire of a Universe wrestler */
+static uint8_t gnum(uint8_t id) { return id < U.n_wrestlers ? U.w[id].game_slot : 0; }
+static uint8_t gatt(uint8_t id) { return id < U.n_wrestlers ? U.w[id].game_attire : 0; }
 
 /* The Royal Rumble: the player confirms (or changes) the first four
  * entrants on Superstar Select; the director writes the rest of the entry
@@ -318,13 +383,14 @@ static void rumble_setup(const UMatch *m, USetup *st)
     st->tag = 0;
     st->preset_each = 1;
     for (i = 0; i < 4; i++) {
-        st->wrestler[i] = demo_game_index(m->entrant[i]);
+        st->wrestler[i] = gnum(m->entrant[i]);
+        st->attire[i] = gatt(m->entrant[i]);
         st->human[i] = (uint8_t)(i == 0 && !pending_watch);
     }
     for (i = 0; i < US_RULES; i++) st->rules[i] = RUMBLE_RULES[i];
     st->rumble_n = m->n_entrants;
     for (i = 0; i < m->n_entrants && i < US_RUMBLE_MAX; i++)
-        st->rumble[i] = demo_game_index(m->entrant[i]);
+        st->rumble[i] = gnum(m->entrant[i]);
     st->belt = -1;
     st->champion[0] = st->champion[1] = 0;
 }
@@ -352,11 +418,18 @@ void us_pending_setup(USetup *st)
     st->tag = m->format == U_FMT_TAG;
     for (i = 0; i < 4; i++) {
         st->wrestler[i] = 0;
+        st->attire[i] = 0;
         st->human[i] = 0;
     }
-    if (ref) st->wrestler[0] = demo_game_index(m->referee);
-    for (i = 0; i < n; i++)
-        st->wrestler[ref + i] = demo_game_index(m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]]);
+    if (ref) {
+        st->wrestler[0] = gnum(m->referee);
+        st->attire[0] = gatt(m->referee);
+    }
+    for (i = 0; i < n; i++) {
+        uint8_t id = m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]];
+        st->wrestler[ref + i] = gnum(id);
+        st->attire[ref + i] = gatt(id);
+    }
     /* Play: the player's wrestler (and the CPU partner in Tag / Handicap,
      * as the game marks it), or the guest referee; Watch: all CPU */
     if (ref) st->human[0] = 1;
@@ -367,25 +440,27 @@ void us_pending_setup(USetup *st)
     match_rules(m, st->rules);
     st->belt = -1;
     st->champion[0] = st->champion[1] = 0;
-    if (m->title != U_NONE && m->title < sizeof GAME_BELT && GAME_BELT[m->title] >= 0) {
+    if (m->title != U_NONE && m->title < GAME_BELTS) {
         uint8_t h = u_title_holder(&U, m->title);
-        st->belt = GAME_BELT[m->title];
+        st->belt = m->title;
         if (h != U_NONE && U.t[m->title].kind == U_TITLE_TAG) {
-            st->champion[0] = demo_game_index(U.tm[h].a);
-            st->champion[1] = demo_game_index(U.tm[h].b);
+            st->champion[0] = gnum(U.tm[h].a);
+            st->champion[1] = gnum(U.tm[h].b);
         } else if (h != U_NONE) {
-            st->champion[0] = demo_game_index(h);
+            st->champion[0] = gnum(h);
         }
     }
 }
 
 /* Universe wrestler for a No Mercy wrestler number (U_NONE if not in it) */
-static uint8_t universe_wrestler(uint8_t game_n)
+static uint8_t universe_wrestler(uint8_t game_n, uint8_t attire)
 {
     int i;
     if (!game_n) return U_NONE;
     for (i = 0; i < U.n_wrestlers; i++)
-        if (demo_game_index((uint8_t)i) == game_n) return (uint8_t)i;
+        if (U.w[i].game_slot == game_n && U.w[i].game_attire == attire) return (uint8_t)i;
+    for (i = 0; i < U.n_wrestlers; i++)       /* (an attire Universe doesn't use) */
+        if (U.w[i].game_slot == game_n && U.w[i].game_attire == 0) return (uint8_t)i;
     return U_NONE;
 }
 
@@ -418,9 +493,9 @@ void us_match_result(const UGameResult *r)
     if (m->format == U_FMT_RUMBLE) {
         /* the winner by wrestler number; someone the player picked instead
          * of a card entrant takes that entrant's place */
-        uint8_t w = universe_wrestler(r->rumble_winner);
+        uint8_t w = universe_wrestler(r->rumble_winner, 0);
         for (i = 0; i < 4 && i < m->n_entrants; i++) {
-            uint8_t p = universe_wrestler(r->game_n[i]);
+            uint8_t p = universe_wrestler(r->game_n[i], r->game_attire[i]);
             if (p != U_NONE && p != m->entrant[i] && !in_match(m, p)) m->entrant[i] = p;
         }
         for (i = 0; i < m->n_entrants; i++)
@@ -437,12 +512,12 @@ void us_match_result(const UGameResult *r)
         if (r->result[first + i] == 4) { win = SLOT_SIDE[m->format][i]; break; }
     if (m->format != U_FMT_TAG)
         for (i = 0; i < n; i++) {
-            uint8_t w = universe_wrestler(r->game_n[first + i]);
+            uint8_t w = universe_wrestler(r->game_n[first + i], r->game_attire[first + i]);
             uint8_t *slot = &m->side[SLOT_SIDE[m->format][i]][SLOT_K[m->format][i]];
             if (w != U_NONE && w != *slot && !in_match(m, w) && w != m->referee) *slot = w;
         }
     if (first) {
-        uint8_t w = universe_wrestler(r->game_n[0]);
+        uint8_t w = universe_wrestler(r->game_n[0], r->game_attire[0]);
         if (w != U_NONE && !in_match(m, w)) m->referee = w;
     }
     m->done = 0;

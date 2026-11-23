@@ -484,3 +484,41 @@ wrestlers, the player confirms (or changes) them, then the loading screen.
   All CPU; the game then plays the whole bracket.
 - The user chose match-by-match tournaments instead (plan updated):
   Universe books the bracket and each match is a normal Exhibition single.
+
+## The roster (plan step 5, 2026-11-23)
+- Wrestler profiles (names), menu heap: number n at 0x8031A398 +
+  0x138 * (n - 1), 4 attires x 0x4E bytes: +0 full name, +0x15 short name,
+  +0x48 u16 weight - 100 (500+ = not given: women, non-wrestlers, Crash).
+  Superstar Select draws the name from there. Numbers 1-49 men (49 attire 2
+  Funaki), 50 Chyna, 51 Stephanie, 52 Tori, 53 Terri / Debra, 54 Trish,
+  55 Lita, 56 Ivory / Jacqueline, 57 Linda, 58 The Kat, 59 Mae Young /
+  Fabulous Moolah, 60 Ho, 61 Vince, 62 Shane, 63 Earl Hebner / Howard Finkel
+  / Paul Bearer / Michael Cole, 64 Jim Ross / Jerry Lawler / Pat Patterson
+  / Gerald Brisco (attires 1-4); 65-82 edit slots (empty).
+- Attire ("Type"): u8 0x800AAAB9 (set before a picker starts, follows
+  C-Right / C-Left); a pick stores it at setup slot + 2.
+- Superstar Select pages, live records at 0x800AAEC0 + 56 * page: 9 x
+  (u16 id, u16 number), u16 count at +0x24, name at +0x26. 0-4 SUPERSTARS,
+  5 LADIES (51 52 54 58 53 55 56), 6 HIDDEN 1 (61 62 57 63 64 59 60),
+  7 HIDDEN 2 (9 7 8 25 46), 8-9 SUPERSTARS 6-7 (empty), 10-11 EDIT 1-2.
+  Live page u16 0x800AAAB6. R / L skip pages where nobody can be picked
+  (0x801386EC(page)); 0x801385FC(id) is the per-wrestler unlock test
+  (hidden wrestlers locked on a fresh save). Locked wrestlers still load
+  as Royal Rumble entrants written into the entry list.
+- Champions table 0x800A53E0 + 0x34 * belt: +2 champion's number, +3 tag
+  partner; all zero on a fresh save.
+
+## Allies and rivals (plan step 5, 2026-11-23)
+- Smackdown Mall > Superstar Options > Edit a Superstar > ALLY/ENEMY:
+  Rival 1 (50%), Rival 2 (30%), Rival 3 (20%), Accompanied by ("Not able
+  to edit" on the built-in wrestlers). Superstar Options also has Change
+  Stable and Stables Name (stable data not located yet).
+- Data: bit-packed records, 0xD8 bytes per wrestler, number n at
+  0x80320A60 + 0xD8 * (n - 1) (menu heap, right after the profiles),
+  unpacked MSB-first by 0x8000644C (bit reader 0x800061E4) into a
+  structure where u16 +0x28 / +0x2A / +0x2C are rival 1-3 and +0x2E the
+  "accompanied by", all as wrestler ids (0 = none). Field getter 0x80007948.
+  Decoded for all 64 (e.g. The Rock: Triple H, Chris Benoit, Undertaker;
+  Edge with Christian, the Hardys / Dudleys / Too Cool with each other,
+  Steven Richards with Bull Buchanan, Eddie Guerrero with Chyna, Triple H
+  with Stephanie, X-Pac with Tori, Test / Val Venis / Albert with Trish).

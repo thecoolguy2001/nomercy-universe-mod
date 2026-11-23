@@ -3,6 +3,7 @@
 #include <string.h>
 #include "../engine/universe.h"
 #include "../host/demo_roster.h"
+#include "../host/roster.h"
 
 static int failures, checks;
 
@@ -120,11 +121,12 @@ static void test_calendar(void)
 static void test_booking_invariants(void)
 {
     uint32_t seed;
-    for (seed = 1; seed <= 25; seed++) {
+    for (seed = 1; seed <= 35; seed++) {     /* demo roster, then the full one */
         Universe u;
         UShow s;
         int show, i, t, k;
-        demo_universe(&u, seed);
+        if (seed <= 25) demo_universe(&u, seed);
+        else roster_universe(&u, seed);
         for (show = 0; show < 52 * 2 + 13; show++) {
             uint8_t seen[U_MAX_WRESTLERS];
             int kotr;
@@ -183,8 +185,12 @@ static void test_booking_invariants(void)
                     CHECK(!seen[id]);
                     seen[id] = 1;
                     CHECK(u.w[id].active && u.w[id].injured_weeks == 0);
-                    if (s.brand != U_NONE) CHECK(u.w[id].brand == s.brand);
+                    CHECK(u.w[id].role == U_ROLE_REGULAR);
                 }
+                /* no intergender matches */
+                for (k = 1; k < 6; k++)
+                    if (m->side[k / 2][k % 2] != U_NONE && m->side[0][0] != U_NONE)
+                        CHECK(u.w[m->side[k / 2][k % 2]].gender == u.w[m->side[0][0]].gender);
                 if (m->format == U_FMT_TAG) CHECK(m->team[0] != m->team[1]);
                 if (m->format == U_FMT_HANDICAP) CHECK(m->title == U_NONE);
                 if (m->title != U_NONE) {
@@ -195,17 +201,19 @@ static void test_booking_invariants(void)
                         CHECK(involves(m, h));
                     if (h != U_NONE && ti->kind == U_TITLE_TAG)
                         CHECK(m->team[0] == h || m->team[1] == h);
-                    if (s.kind == U_SHOW_WEEKLY) CHECK(ti->brand == s.brand);
+                    if (ti->kind == U_TITLE_SINGLES)   /* challengers fit the division */
+                        for (k = 0; k < u_match_sides(m); k++)
+                            if (m->side[k][0] != h) CHECK(u_eligible(&u, m->side[k][0], ti->division));
                 }
             }
-            /* every healthy singles champion of this show's brand is booked,
-             * and at a PPV every one of them defends */
+            /* at a PPV every healthy singles champion defends (no brand
+             * split: weekly defences come when they are due) */
             for (t = 0; t < u.n_titles; t++) {
                 uint8_t h = u_title_holder(&u, (uint8_t)t);
                 const UTitle *ti = &u.t[t];
                 if (h == U_NONE || ti->kind != U_TITLE_SINGLES || u.w[h].injured_weeks)
                     continue;
-                if (s.brand != U_NONE && ti->brand != s.brand) continue;
+                if (s.kind != U_SHOW_PPV) continue;
                 if (kotr && t != 0) continue;     /* King of the Ring: one defence */
                 CHECK(seen[h]);
                 if (s.kind == U_SHOW_PPV) {
@@ -340,9 +348,11 @@ static void test_played_result_validation(void)
         CHECK(u_set_ironman_result(&m, level) == 0);   /* level on falls: a draw */
         CHECK(m.done && m.winner == U_NONE && m.method == U_WIN_DRAW);
         m.format = U_FMT_TRIPLE;
+        m.side[2][0] = (uint8_t)(m.side[0][0] ? 0 : 1);   /* a third wrestler */
         CHECK(u_set_ironman_result(&m, three) == 0);
         CHECK(m.winner == 2 && m.falls[2] == 4);
         m.format = U_FMT_SINGLE;
+        m.side[2][0] = U_NONE;
     }
     m.done = 0;
     m.stip = U_STIP_NODQ;
@@ -354,6 +364,7 @@ static void test_played_result_validation(void)
     m.done = 0;
     m.format = U_FMT_TRIPLE;
     m.stip = U_STIP_NORMAL;
+    m.side[2][0] = (uint8_t)(m.side[0][0] ? 0 : 1);
     CHECK(u_set_result(&m, 2, U_WIN_PINFALL) == 0);
     CHECK(u_set_result(&m, 3, U_WIN_PINFALL) == -1);
 }
@@ -727,6 +738,70 @@ static void test_king_of_the_ring(void)
     }
 }
 
+/* The World title (if on the card) is the main event, unless it's the
+ * Royal Rumble */
+static int prominence_ok(const Universe *u, const UShow *s)
+{
+    int i;
+    (void)u;
+    for (i = 0; i < s->count - 1; i++)
+        if (s->m[i].title == 0 && s->m[s->count - 1].format != U_FMT_RUMBLE &&
+            !s->m[s->count - 1].kotr)
+            return 0;
+    return 1;
+}
+
+/* The full roster: No Mercy's wrestlers, the 7 belts in game order,
+ * champions who fit their division, a women's match on every weekly show. */
+static void test_full_roster(void)
+{
+    Universe u;
+    UShow s;
+    int i, k, men = 0, women = 0, fill = 0, light = 0, shows, ok = 0;
+    roster_universe(&u, 7);
+    for (i = 0; i < u.n_wrestlers; i++) {
+        const UWrestler *w = &u.w[i];
+        CHECK(w->game_slot >= 1 && w->game_slot <= 64 && w->game_attire < 4);
+        for (k = 0; k < i; k++)                  /* one wrestler per game character */
+            CHECK(u.w[k].game_slot != w->game_slot || u.w[k].game_attire != w->game_attire);
+        if (w->role == U_ROLE_FILLIN) { fill++; continue; }
+        if (w->gender == U_MALE) men++; else women++;
+        if (u_eligible(&u, (uint8_t)i, U_DIV_LIGHT)) light++;
+    }
+    CHECK(men == 50 && women == 10 && fill >= 1 && light >= 8);
+    CHECK(u.n_titles == 7);
+    CHECK(u.t[0].kind == U_TITLE_SINGLES && u.t[1].kind == U_TITLE_TAG);
+    CHECK(u.t[5].division == U_DIV_LIGHT && u.t[6].division == U_DIV_WOMEN);
+    for (i = 0; i < u.n_titles; i++) {
+        uint8_t h = u_title_holder(&u, (uint8_t)i);
+        CHECK(h != U_NONE);
+        if (u.t[i].kind == U_TITLE_SINGLES && h != U_NONE)
+            CHECK(u_eligible(&u, h, u.t[i].division));
+    }
+    for (shows = 0; shows < 60; shows++) {
+        int womens = 0;
+        u_book_show(&u, &s);
+        for (i = 0; i < s.count; i++)
+            if (s.m[i].side[0][0] != U_NONE && u.w[s.m[i].side[0][0]].gender == U_FEMALE)
+                womens++;
+        if (s.kind == U_SHOW_WEEKLY) ok += womens >= 1;
+        {   /* one of Mankind / Cactus Jack / Mick Foley per card (Rumble aside) */
+            int persona = 0;
+            for (i = 0; i < s.count; i++)
+                for (k = 0; k < 6; k++) {
+                    uint8_t id = s.m[i].side[k / 2][k % 2];
+                    if (id != U_NONE && u.w[id].persona == 1) persona |= 1 << u.w[id].game_slot;
+                }
+            CHECK((persona & (persona - 1)) == 0);
+        }
+        CHECK(prominence_ok(&u, &s));
+        CHECK(womens <= 2);
+        u_sim_show(&u, &s);
+        u_apply_show(&u, &s);
+    }
+    CHECK(ok >= 40);                            /* (injuries can thin the division) */
+}
+
 int main(void)
 {
     test_save_roundtrip();
@@ -748,6 +823,7 @@ int main(void)
     test_stips_booked();
     test_royal_rumble();
     test_king_of_the_ring();
+    test_full_roster();
     printf("%d checks, %d failures (save size %d bytes)\n", checks, failures,
            U_SAVE_SIZE);
     return failures ? 1 : 0;
